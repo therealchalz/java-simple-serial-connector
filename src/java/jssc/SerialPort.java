@@ -553,8 +553,8 @@ public class SerialPort {
     private void waitBytesWithTimeout(String methodName, int byteCount, int timeout) throws SerialPortException, SerialPortTimeoutException {
         checkPortOpened("waitBytesWithTimeout()");
         boolean timeIsOut = true;
-        long startTime = System.currentTimeMillis();
-        while((System.currentTimeMillis() - startTime) < timeout){
+        long startTime = System.nanoTime();
+        while((System.nanoTime() - startTime) < timeout * 1000000){
             if(getInputBufferBytesCount() >= byteCount){
                 timeIsOut = false;
                 break;
