@@ -31,6 +31,7 @@
 #include <errno.h>//-D_TS_ERRNO use for Solaris C++ compiler
 
 #include <sys/select.h>//since 2.5.0
+#include <sys/time.h>	//For timeouts to select()
 
 #ifdef __linux__
     #include <linux/serial.h>
@@ -41,6 +42,8 @@
 #endif
 #ifdef __APPLE__
     #include <serial/ioss.h>//Needed for IOSSIOSPEED in Mac OS X (Non standard baudrate)
+    #include <mach/clock.h>
+    #include <mach/mach.h>
 #endif
 
 #include <jni.h>
@@ -53,6 +56,22 @@
  */
 JNIEXPORT jstring JNICALL Java_jssc_SerialNativeInterface_getNativeLibraryVersion(JNIEnv *env, jobject object) {
     return env->NewStringUTF(jSSC_NATIVE_LIB_VERSION);
+}
+
+/*
+ * Calls System.out.println(String msg) with the given message.
+ */
+static void println(JNIEnv *env, const char* msg) {
+    //Adapted from 
+    // http://stackoverflow.com/questions/25417792/how-to-call-system-out-println-from-c-via-jni
+    jclass syscls = env->FindClass("java/lang/System");
+    jfieldID fid = env->GetStaticFieldID(syscls, "out", "Ljava/io/PrintStream;");
+    jobject out = env->GetStaticObjectField(syscls, fid);
+    jclass pscls = env->FindClass("java/io/PrintStream");
+    jmethodID mid = env->GetMethodID(pscls, "println", "(Ljava/lang/String;)V");
+
+    jstring str = env->NewStringUTF(msg);
+    env->CallVoidMethod(out, mid, str);
 }
 
 /* OK */
@@ -522,29 +541,166 @@ JNIEXPORT jboolean JNICALL Java_jssc_SerialNativeInterface_writeBytes
     return result == bufferSize ? JNI_TRUE : JNI_FALSE;
 }
 
+/*
+ * Get the number of micro seconds since some epoch.  Uses a monotonic
+ * clock source.  Returns -1 on error.
+ */
+static long getTimePreciseMicros() {
+#ifdef __APPLE__
+    //Taken from https://gist.github.com/jbenet/1087739
+    clock_serv_t cclock;
+    mach_timespec_t mts;
+    host_get_clock_service(mach_host_self(), SYSTEM_CLOCK, &cclock);
+    clock_get_time(cclock, &mts);
+    mach_port_deallocate(mach_task_self(), cclock);
+    return (long)mts.tv_sec*1000000 + (long)mts.tv_nsec/1000;
+#else //rest of *nix should work with this
+    struct timespec timeSpec;
+    if (clock_gettime(CLOCK_MONOTONIC, &timeSpec) != -1) {
+        return (long)timeSpec.tv_sec*1000000 + (long)(((double)timeSpec.tv_nsec)/1000);
+    }
+#endif
+    return -1;
+}
+
+/*
+ * Updates the supplied timeval struct with the next timeout to use for a select call,
+ * based on the timeoutDeadline and the pollPeriodMillis parameters.
+ * returns 0 if we should block forever (and thus the time* is undefined), returns
+ * 1 if the time* has been filled with the next unblock timeout for select().
+ */
+static int getNextTimeout(struct timeval *time, long timeoutDeadline, long pollPeriodMillis) {
+    if (time == NULL)
+        return 0;
+
+    if (timeoutDeadline != 0) {
+        long currentTime = getTimePreciseMicros();
+        long timeUntilTimeout = timeoutDeadline - currentTime;
+
+        if (timeUntilTimeout <= 0) {
+            time->tv_sec=0;
+            time->tv_usec=0;
+        } else {
+            if (pollPeriodMillis != 0) {
+                long pollPeriodMicros = pollPeriodMillis * 1000;
+                if (pollPeriodMicros < timeUntilTimeout) {
+                    time->tv_sec = pollPeriodMicros / 1000000;
+                    time->tv_usec = pollPeriodMicros % 1000000;
+                } else {
+                    time->tv_sec = timeUntilTimeout / 1000000;
+                    time->tv_usec = timeUntilTimeout % 1000000;
+                }
+            } else {
+                time->tv_sec = timeUntilTimeout / 1000000;
+                time->tv_usec = timeUntilTimeout % 1000000;
+            }
+        }
+        return 1;
+    } else if (pollPeriodMillis != 0) {
+        time->tv_sec = pollPeriodMillis / 1000000;
+        time->tv_usec = pollPeriodMillis % 1000000;
+        return 1;
+    }
+    return 0;    //Blocks forever
+}
+
+/*
+ * Throws a java SerialPortException with the provided parameters.
+ */
+static void throwTimeoutException(JNIEnv *env, const char* portName, const char* methodName, long timeoutMillis) {
+    jclass excClass = env->FindClass("jssc/SerialPortTimeoutException");
+    jmethodID ctor = env->GetMethodID(excClass, "<init>", "(Ljava/lang/String;Ljava/lang/String;I)V");
+    jstring port = env->NewStringUTF(portName);
+    jstring method = env->NewStringUTF(methodName);
+    jobject exception = env->NewObject(excClass, ctor, port, method, (jlong)timeoutMillis);
+    env->Throw((jthrowable)exception);
+}
+
 /* OK */
 /*
  * Reading data from the port
+ * If timeoutMilliseconds and pollPeriodMillis are both 0, then this method blocks
+ * until all byteCount bytes are read.  Otherwise, every pollPeriodMillis milliseconds
+ * this thread will temporarily unblock to check the java thread's interrupt status,
+ * so that this call can be cancelled from java through a Thread.interrupt() invocation.
+ * If exceptionOnTimeout is true, then a SerialPortTimeoutException is thrown if 
+ * timeoutMilliseconds elapses before byteCount bytes are read.  If exceptionOnTimeout
+ * is false and the timeout elapses, then this function returns whatever data has been
+ * read (which could be 0 or more bytes).
  *
- * Rewrited in 2.5.0 (using select() function for correct block reading in MacOS X)
  */
 JNIEXPORT jbyteArray JNICALL Java_jssc_SerialNativeInterface_readBytes
-  (JNIEnv *env, jobject object, jlong portHandle, jint byteCount){
+  (JNIEnv *env, jobject object, jlong portHandle, jint byteCount,
+    jlong timeoutMilliseconds, jlong pollPeriodMillis, jboolean exceptionOnTimeout){
     fd_set read_fd_set;
     jbyte *lpBuffer = new jbyte[byteCount];
     int byteRemains = byteCount;
+    struct timeval timeout;
+    int selectRetVal;
+    long timeoutDeadline = 0;
+
+    if (timeoutMilliseconds != 0) {
+        timeoutDeadline = getTimePreciseMicros();
+        if (timeoutDeadline == -1) { //cannot do timeout because we don't have
+            //a monotonic clock implementation for this 
+            jclass excClass = env->FindClass("java/io/IOException");
+            env->ThrowNew(excClass, "Unsupported Operation: This platform doesn't support serial timeouts");
+            jbyteArray fakeRet = env->NewByteArray(0);
+            delete lpBuffer;
+            return fakeRet;
+        }
+        timeoutDeadline += timeoutMilliseconds*1000;
+    }
+
+    jclass threadClass = env->FindClass("java/lang/Thread");
+    jmethodID areWeInterruptedMethod = env->GetStaticMethodID(threadClass, "interrupted", "()Z");
+
+    int hasTimeout = getNextTimeout(&timeout, timeoutDeadline, pollPeriodMillis);
+
     while(byteRemains > 0) {
         FD_ZERO(&read_fd_set);
         FD_SET(portHandle, &read_fd_set);
-        select(portHandle + 1, &read_fd_set, NULL, NULL, NULL);
-        int result = read(portHandle, lpBuffer + (byteCount - byteRemains), byteRemains);
-        if(result > 0){
-            byteRemains -= result;
+
+        if (hasTimeout) {
+            selectRetVal = select(portHandle + 1, &read_fd_set, NULL, NULL, &timeout);
+        } else {
+            selectRetVal = select(portHandle + 1, &read_fd_set, NULL, NULL, NULL);
+        }
+
+        // Check if the java thread has been interrupted, and if so, throw the exception
+        if (env->CallStaticBooleanMethod(threadClass, areWeInterruptedMethod)) {
+            jclass excClass = env->FindClass("java/lang/InterruptedException");
+            env->ThrowNew(excClass, "Interrupted while waiting for serial data");
+            jbyteArray fakeRet = env->NewByteArray(0);
+            delete lpBuffer;
+            return fakeRet; // It shouldn't matter what we return, the exception will be thrown right away
+        }
+
+        if (selectRetVal > 0) {
+            int result = read(portHandle, lpBuffer + (byteCount - byteRemains), byteRemains);
+            if(result > 0){
+                byteRemains -= result;
+            }
+        }
+
+        // Check if we've timed out and if so, throw the exception or return the data
+        if (hasTimeout) {
+            hasTimeout = getNextTimeout(&timeout, timeoutDeadline, pollPeriodMillis);
+            if (timeout.tv_sec == 0 && timeout.tv_usec == 0) {
+                if (exceptionOnTimeout) {
+                    throwTimeoutException(env, "NoPort", "<native>readBytes()", timeoutMilliseconds);
+                    jbyteArray fakeRet = env->NewByteArray(0);
+                    delete lpBuffer;
+                    return fakeRet;
+                } else {
+                    break;
+                }
+            }
         }
     }
     FD_CLR(portHandle, &read_fd_set);
-    jbyteArray returnArray = env->NewByteArray(byteCount);
-    env->SetByteArrayRegion(returnArray, 0, byteCount, lpBuffer);
+    jbyteArray returnArray = env->NewByteArray(byteCount-byteRemains);
+    env->SetByteArrayRegion(returnArray, 0, byteCount-byteRemains, lpBuffer);
     delete lpBuffer;
     return returnArray;
 }

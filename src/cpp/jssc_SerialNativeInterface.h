@@ -134,10 +134,10 @@ JNIEXPORT jboolean JNICALL Java_jssc_SerialNativeInterface_setDTR
 /*
  * Class:     jssc_SerialNativeInterface
  * Method:    readBytes
- * Signature: (JI)[B
+ * Signature: (JIJJZ)[B
  */
 JNIEXPORT jbyteArray JNICALL Java_jssc_SerialNativeInterface_readBytes
-  (JNIEnv *, jobject, jlong, jint);
+  (JNIEnv *, jobject, jlong, jint, jlong, jlong, jboolean);
 
 /*
  * Class:     jssc_SerialNativeInterface

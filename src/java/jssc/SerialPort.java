@@ -24,6 +24,7 @@
  */
 package jssc;
 
+import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.lang.reflect.Method;
 import java.nio.charset.Charset;
@@ -41,6 +42,12 @@ public class SerialPort {
     private boolean portOpened = false;
     private boolean maskAssigned = false;
     private boolean eventListenerAdded = false;
+    private boolean blockingReads = true;	/* True if we should use readBytesWithTimeout() as 
+    the underlying reading mechanism (which uses a monotonic system clock for blocking).  False 
+    if we shoud instead use waitBytesWithTimeout (which polls for the data, but doesn't rely on
+    a monotonic clock being available on the platform */
+    private int interruptPollingPeriodMillis = 50;	/*How often the blocking native read 
+    implementation should poll the thread's interrupt status.*/
 
     //since 2.2.0 ->
     private Method methodErrorOccurred = null;
@@ -336,6 +343,22 @@ public class SerialPort {
         checkPortOpened("setDTR()");
         return serialInterface.setDTR(portHandle, enabled);
     }
+    
+    /**
+     * Enables or disables blocking reads (as opposed to polling).
+     * Setting this to true makes the underlying serial read operations
+     * use the OS's blocking calls for serial data, but this also makes
+     * use of the OS's monotonic timer, if available.  If this timer is
+     * not available on the platform, then timeouts cannot be tracked,
+     * and blocking reads will not work (and will return an exception).
+     * In this case, you can set blocking reads to false, in which case
+     * the data is polled for instead of using the OS's blocking calls.
+     * @param blockingReads True to use the OS's native blocking read
+     * call.  False to poll for data from Java.
+     */
+    public void setBlockingReads(boolean blockingReads) {
+    	this.blockingReads = blockingReads;
+    }
 
     /**
      * Write byte array to port
@@ -433,8 +456,7 @@ public class SerialPort {
      * @throws SerialPortException
      */
     public byte[] readBytes(int byteCount) throws SerialPortException {
-        checkPortOpened("readBytes()");
-        return serialInterface.readBytes(portHandle, byteCount);
+        return readBytes(byteCount, 0);
     }
 
     /**
@@ -450,7 +472,7 @@ public class SerialPort {
      */
     public String readString(int byteCount) throws SerialPortException {
         checkPortOpened("readString()");
-        return new String(readBytes(byteCount));
+        return readString(byteCount, 0);
     }
 
     /**
@@ -481,18 +503,7 @@ public class SerialPort {
      * @since 0.8
      */
     public String readHexString(int byteCount, String separator) throws SerialPortException {
-        checkPortOpened("readHexString()");
-        String[] strBuffer = readHexStringArray(byteCount);
-        String returnString = "";
-        boolean insertSeparator = false;
-        for(String value : strBuffer){
-            if(insertSeparator){
-                returnString += separator;
-            }
-            returnString += value;
-            insertSeparator = true;
-        }
-        return returnString;
+    	return readHexString(byteCount, separator, 0);
     }
 
     /**
@@ -507,17 +518,7 @@ public class SerialPort {
      * @since 0.8
      */
     public String[] readHexStringArray(int byteCount) throws SerialPortException {
-        checkPortOpened("readHexStringArray()");
-        int[] intBuffer = readIntArray(byteCount);
-        String[] strBuffer = new String[intBuffer.length];
-        for(int i = 0; i < intBuffer.length; i++){
-            String value = Integer.toHexString(intBuffer[i]).toUpperCase();
-            if(value.length() == 1) {
-                value = "0" + value;
-            }
-            strBuffer[i] = value;
-        }
-        return strBuffer;
+        return readHexStringArray(byteCount, 0);
     }
 
     /**
@@ -532,25 +533,54 @@ public class SerialPort {
      * @since 0.8
      */
     public int[] readIntArray(int byteCount) throws SerialPortException {
-        checkPortOpened("readIntArray()");
-        byte[] buffer = readBytes(byteCount);
-        int[] intBuffer = new int[buffer.length];
-        for(int i = 0; i < buffer.length; i++){
-            if(buffer[i] < 0){
-                intBuffer[i] = 256 + buffer[i];
-            }
-            else {
-                intBuffer[i] = buffer[i];
-            }
-        }
-        return intBuffer;
+    	return readIntArray(byteCount, 0);
+    	
+    }
+    
+    /** 
+     * Low level reading data from the port.
+     * If timeoutMilliseconds and interruptPollPeriod are both 0, then this method blocks
+     * until all byteCount bytes are read.  Otherwise, every interruptPollPeriod milliseconds
+     * this thread will temporarily unblock to check the java thread's interrupt status,
+     * so that this call can be cancelled from java through a Thread.interrupt() invocation.
+     * If exceptionOnTimeout is true, then a SerialPortTimeoutException is thrown if 
+     * timeoutMilliseconds elapses before byteCount bytes are read.  If exceptionOnTimeout
+     * is false and the timeout elapses, then this function returns whatever data has been
+ 	 * read (which could be 0 or more bytes).  This function could be made public to provide 
+ 	 * the calling application with much more control granularity over the serial port reading.
+ 	 * @param byteCount Number of bytes to read
+     * @param timeoutMilliseconds Maximum number of milliseconds to wait before timing out.
+     * @param interruptPollPeriod How often to check the java threads's interrupt status to see
+     * if we should be interrupted.
+     * @param exceptionOnTimeout Determines if a timeout condition should trigger a
+     * SerialPortTimeoutException, or if the function should simply return whatever data was read.
+     * @return An array of bytes, read from the port.
+     * @throws SerialPortException on interrupt, on timeout (if exceptionOnTimeout is true), or if the
+     * platform didn't support the timeout timers.
+     */
+    private byte[] readBytesWithTimeout(int byteCount, 
+    		long timeoutMilliseconds, int interruptPollPeriod, 
+    		boolean exceptionOnTimeout) throws SerialPortException {
+    	checkPortOpened("readBytesWithTimeout()");
+        try {
+            return serialInterface.readBytes(portHandle, byteCount, timeoutMilliseconds, interruptPollPeriod, exceptionOnTimeout);
+        } catch (InterruptedException e) {
+            throw new SerialPortException(portName, "readBytesWithTimeout", SerialPortException.TYPE_LISTENER_THREAD_INTERRUPTED);
+        } catch (IOException e) {
+        	if (e instanceof SerialPortTimeoutException) {
+        		throw (SerialPortTimeoutException)e;
+        	} else {
+        		throw new SerialPortException(portName, "readBytesWithTimeout", SerialPortException.TYPE_PLATFORM_TIMER_ERROR);
+        	}
+		}
     }
 
     private void waitBytesWithTimeout(String methodName, int byteCount, int timeout) throws SerialPortException, SerialPortTimeoutException {
         checkPortOpened("waitBytesWithTimeout()");
         boolean timeIsOut = true;
-        long startTime = System.currentTimeMillis();
-        while((System.currentTimeMillis() - startTime) < timeout){
+        long startTime = System.nanoTime();
+        long timeoutNanos = timeout*1000000;
+        while((System.nanoTime() - startTime) < timeoutNanos){
             if(getInputBufferBytesCount() >= byteCount){
                 timeIsOut = false;
                 break;
@@ -559,7 +589,7 @@ public class SerialPort {
                 Thread.sleep(0, 100);//Need to sleep some time to prevent high CPU loading
             }
             catch (InterruptedException ex) {
-                //Do nothing
+                throw new SerialPortException(portName, methodName, SerialPortException.TYPE_LISTENER_THREAD_INTERRUPTED);
             }
         }
         if(timeIsOut){
@@ -582,8 +612,15 @@ public class SerialPort {
      */
     public byte[] readBytes(int byteCount, int timeout) throws SerialPortException, SerialPortTimeoutException {
         checkPortOpened("readBytes()");
-        waitBytesWithTimeout("readBytes()", byteCount, timeout);
-        return readBytes(byteCount);
+        byte[] ret;
+        if (blockingReads) {
+        	ret = readBytesWithTimeout(byteCount, timeout, interruptPollingPeriodMillis, true);
+        } else {
+        	waitBytesWithTimeout("readBytes()", byteCount, timeout);
+        	ret = readBytesWithTimeout(byteCount, 0, interruptPollingPeriodMillis, true);
+        }
+        
+        return ret;
     }
 
     /**
@@ -601,8 +638,7 @@ public class SerialPort {
      */
     public String readString(int byteCount, int timeout) throws SerialPortException, SerialPortTimeoutException {
         checkPortOpened("readString()");
-        waitBytesWithTimeout("readString()", byteCount, timeout);
-        return readString(byteCount);
+        return new String(readBytes(byteCount, timeout));
     }
 
     /**
@@ -620,8 +656,7 @@ public class SerialPort {
      */
     public String readHexString(int byteCount, int timeout) throws SerialPortException, SerialPortTimeoutException {
         checkPortOpened("readHexString()");
-        waitBytesWithTimeout("readHexString()", byteCount, timeout);
-        return readHexString(byteCount);
+        return readHexString(byteCount, " ", timeout);
     }
 
     /**
@@ -639,8 +674,17 @@ public class SerialPort {
      */
     public String readHexString(int byteCount, String separator, int timeout) throws SerialPortException, SerialPortTimeoutException {
         checkPortOpened("readHexString()");
-        waitBytesWithTimeout("readHexString()", byteCount, timeout);
-        return readHexString(byteCount, separator);
+        String[] strBuffer = readHexStringArray(byteCount, timeout);
+        String returnString = "";
+        boolean insertSeparator = false;
+        for(String value : strBuffer){
+            if(insertSeparator){
+                returnString += separator;
+            }
+            returnString += value;
+            insertSeparator = true;
+        }
+        return returnString;
     }
 
     /**
@@ -658,8 +702,16 @@ public class SerialPort {
      */
     public String[] readHexStringArray(int byteCount, int timeout) throws SerialPortException, SerialPortTimeoutException {
         checkPortOpened("readHexStringArray()");
-        waitBytesWithTimeout("readHexStringArray()", byteCount, timeout);
-        return readHexStringArray(byteCount);
+        int[] intBuffer = readIntArray(byteCount, timeout);
+        String[] strBuffer = new String[intBuffer.length];
+        for(int i = 0; i < intBuffer.length; i++){
+            String value = Integer.toHexString(intBuffer[i]).toUpperCase();
+            if(value.length() == 1) {
+                value = "0" + value;
+            }
+            strBuffer[i] = value;
+        }
+        return strBuffer;
     }
 
     /**
@@ -677,8 +729,16 @@ public class SerialPort {
      */
     public int[] readIntArray(int byteCount, int timeout) throws SerialPortException, SerialPortTimeoutException {
         checkPortOpened("readIntArray()");
-        waitBytesWithTimeout("readIntArray()", byteCount, timeout);
-        return readIntArray(byteCount);
+        byte[] buffer = readBytes(byteCount, timeout);
+        int[] intBuffer = new int[buffer.length];
+        for(int i = 0; i < buffer.length; i++){
+            if(buffer[i] < 0){
+                intBuffer[i] = 256 + buffer[i];
+            } else {
+                intBuffer[i] = buffer[i];
+            }
+        }
+        return intBuffer;
     }
 
     /**

@@ -27,6 +27,7 @@ package jssc;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 
@@ -402,10 +403,21 @@ public class SerialNativeInterface {
      * 
      * @param handle handle of opened port
      * @param byteCount count of bytes required to read
+     * @param timeoutMilliseconds the maximum number of milliseconds to wait for byteCount
+     * bytes to arrive.  Set to 0 to block indefinitely.
+     * @param pollPeriodMillis how often to check if the thread has been interrupted.  Set
+     * to 0 to simply wait timeoutMilliseconds (or wait forever if timeoutMilliseconds is 0).
+     * @param exceptionOnTimeout function will throw a SerialPortTimeoutException if this parameter
+     * is set to true and the timeout expires before byteCount bytes are read.  If this parameter
+     * is set to false, then upon timeout, this function will return a (possibly length 0)
+     * array of the bytes already read.
      * 
      * @return Method returns the array of read bytes
+     * @throws InterruptedException if the java thread is interrupted while blocking 
+     * @throws SerialPortTimeoutException if the timeout was reached and exceptionOnTimeout is true
+     * @throws IOException if timeoutMilliseconds was not zero, but the platform doesn't support timeouts
      */
-    public native byte[] readBytes(long handle, int byteCount);
+    public native byte[] readBytes(long handle, int byteCount, long timeoutMilliseconds, long pollPeriodMillis, boolean exceptionOnTimeout) throws InterruptedException, SerialPortTimeoutException, IOException;
 
     /**
      * Write data to port
