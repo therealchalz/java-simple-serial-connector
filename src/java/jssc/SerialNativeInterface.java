@@ -415,9 +415,8 @@ public class SerialNativeInterface {
      * @return Method returns the array of read bytes
      * @throws InterruptedException if the java thread is interrupted while blocking 
      * @throws SerialPortTimeoutException if the timeout was reached and exceptionOnTimeout is true
-     * @throws IOException if timeoutMilliseconds was not zero, but the platform doesn't support timeouts
      */
-    public native byte[] readBytes(long handle, int byteCount, long timeoutMilliseconds, long pollPeriodMillis, boolean exceptionOnTimeout) throws InterruptedException, SerialPortTimeoutException, IOException;
+    public native byte[] readBytes(long handle, int byteCount, long timeoutMilliseconds, long pollPeriodMillis, boolean exceptionOnTimeout) throws InterruptedException, SerialPortTimeoutException;
 
     /**
      * Write data to port

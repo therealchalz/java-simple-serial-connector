@@ -62,10 +62,6 @@ public class SerialPortException extends IOException {
      * @since 2.3.0
      */
     final public static String TYPE_INCORRECT_SERIAL_PORT = "Incorrect serial port";
-    /**
-     * @since 2.9.0
-     */
-    final public static String TYPE_PLATFORM_TIMER_ERROR = "Platform does not support monotonic clock - set SerialPort.blockingReads to false to use the polling method";
 
     private String portName;
     private String methodName;

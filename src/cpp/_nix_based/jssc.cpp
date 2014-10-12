@@ -48,6 +48,7 @@
 
 #include <jni.h>
 #include "../jssc_SerialNativeInterface.h"
+#include "../jssc_Common.h"
 
 //#include <iostream> //-lCstd use for Solaris linker
 
@@ -56,22 +57,6 @@
  */
 JNIEXPORT jstring JNICALL Java_jssc_SerialNativeInterface_getNativeLibraryVersion(JNIEnv *env, jobject object) {
     return env->NewStringUTF(jSSC_NATIVE_LIB_VERSION);
-}
-
-/*
- * Calls System.out.println(String msg) with the given message.
- */
-static void println(JNIEnv *env, const char* msg) {
-    //Adapted from 
-    // http://stackoverflow.com/questions/25417792/how-to-call-system-out-println-from-c-via-jni
-    jclass syscls = env->FindClass("java/lang/System");
-    jfieldID fid = env->GetStaticFieldID(syscls, "out", "Ljava/io/PrintStream;");
-    jobject out = env->GetStaticObjectField(syscls, fid);
-    jclass pscls = env->FindClass("java/io/PrintStream");
-    jmethodID mid = env->GetMethodID(pscls, "println", "(Ljava/lang/String;)V");
-
-    jstring str = env->NewStringUTF(msg);
-    env->CallVoidMethod(out, mid, str);
 }
 
 /* OK */
@@ -541,81 +526,6 @@ JNIEXPORT jboolean JNICALL Java_jssc_SerialNativeInterface_writeBytes
     return result == bufferSize ? JNI_TRUE : JNI_FALSE;
 }
 
-/*
- * Get the number of micro seconds since some epoch.  Uses a monotonic
- * clock source.  Returns -1 on error.
- */
-static long getTimePreciseMicros() {
-#ifdef __APPLE__
-    //Taken from https://gist.github.com/jbenet/1087739
-    clock_serv_t cclock;
-    mach_timespec_t mts;
-    host_get_clock_service(mach_host_self(), SYSTEM_CLOCK, &cclock);
-    clock_get_time(cclock, &mts);
-    mach_port_deallocate(mach_task_self(), cclock);
-    return (long)mts.tv_sec*1000000 + (long)mts.tv_nsec/1000;
-#else //rest of *nix should work with this
-    struct timespec timeSpec;
-    if (clock_gettime(CLOCK_MONOTONIC, &timeSpec) != -1) {
-        return (long)timeSpec.tv_sec*1000000 + (long)(((double)timeSpec.tv_nsec)/1000);
-    }
-#endif
-    return -1;
-}
-
-/*
- * Updates the supplied timeval struct with the next timeout to use for a select call,
- * based on the timeoutDeadline and the pollPeriodMillis parameters.
- * returns 0 if we should block forever (and thus the time* is undefined), returns
- * 1 if the time* has been filled with the next unblock timeout for select().
- */
-static int getNextTimeout(struct timeval *time, long timeoutDeadline, long pollPeriodMillis) {
-    if (time == NULL)
-        return 0;
-
-    if (timeoutDeadline != 0) {
-        long currentTime = getTimePreciseMicros();
-        long timeUntilTimeout = timeoutDeadline - currentTime;
-
-        if (timeUntilTimeout <= 0) {
-            time->tv_sec=0;
-            time->tv_usec=0;
-        } else {
-            if (pollPeriodMillis != 0) {
-                long pollPeriodMicros = pollPeriodMillis * 1000;
-                if (pollPeriodMicros < timeUntilTimeout) {
-                    time->tv_sec = pollPeriodMicros / 1000000;
-                    time->tv_usec = pollPeriodMicros % 1000000;
-                } else {
-                    time->tv_sec = timeUntilTimeout / 1000000;
-                    time->tv_usec = timeUntilTimeout % 1000000;
-                }
-            } else {
-                time->tv_sec = timeUntilTimeout / 1000000;
-                time->tv_usec = timeUntilTimeout % 1000000;
-            }
-        }
-        return 1;
-    } else if (pollPeriodMillis != 0) {
-        time->tv_sec = pollPeriodMillis / 1000000;
-        time->tv_usec = pollPeriodMillis % 1000000;
-        return 1;
-    }
-    return 0;    //Blocks forever
-}
-
-/*
- * Throws a java SerialPortException with the provided parameters.
- */
-static void throwTimeoutException(JNIEnv *env, const char* portName, const char* methodName, long timeoutMillis) {
-    jclass excClass = env->FindClass("jssc/SerialPortTimeoutException");
-    jmethodID ctor = env->GetMethodID(excClass, "<init>", "(Ljava/lang/String;Ljava/lang/String;I)V");
-    jstring port = env->NewStringUTF(portName);
-    jstring method = env->NewStringUTF(methodName);
-    jobject exception = env->NewObject(excClass, ctor, port, method, (jlong)timeoutMillis);
-    env->Throw((jthrowable)exception);
-}
-
 /* OK */
 /*
  * Reading data from the port
@@ -640,22 +550,13 @@ JNIEXPORT jbyteArray JNICALL Java_jssc_SerialNativeInterface_readBytes
     long timeoutDeadline = 0;
 
     if (timeoutMilliseconds != 0) {
-        timeoutDeadline = getTimePreciseMicros();
-        if (timeoutDeadline == -1) { //cannot do timeout because we don't have
-            //a monotonic clock implementation for this 
-            jclass excClass = env->FindClass("java/io/IOException");
-            env->ThrowNew(excClass, "Unsupported Operation: This platform doesn't support serial timeouts");
-            jbyteArray fakeRet = env->NewByteArray(0);
-            delete lpBuffer;
-            return fakeRet;
-        }
-        timeoutDeadline += timeoutMilliseconds*1000;
+        timeoutDeadline = getTimePreciseMicros(env) + timeoutMilliseconds*1000;
     }
 
     jclass threadClass = env->FindClass("java/lang/Thread");
     jmethodID areWeInterruptedMethod = env->GetStaticMethodID(threadClass, "interrupted", "()Z");
 
-    int hasTimeout = getNextTimeout(&timeout, timeoutDeadline, pollPeriodMillis);
+    int hasTimeout = getNextTimeout(env, &timeout, timeoutDeadline, pollPeriodMillis);
 
     while(byteRemains > 0) {
         FD_ZERO(&read_fd_set);
@@ -685,7 +586,7 @@ JNIEXPORT jbyteArray JNICALL Java_jssc_SerialNativeInterface_readBytes
 
         // Check if we've timed out and if so, throw the exception or return the data
         if (hasTimeout) {
-            hasTimeout = getNextTimeout(&timeout, timeoutDeadline, pollPeriodMillis);
+            hasTimeout = getNextTimeout(env, &timeout, timeoutDeadline, pollPeriodMillis);
             if (timeout.tv_sec == 0 && timeout.tv_usec == 0) {
                 if (exceptionOnTimeout) {
                     throwTimeoutException(env, "NoPort", "<native>readBytes()", timeoutMilliseconds);
