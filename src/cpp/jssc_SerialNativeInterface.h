@@ -33,7 +33,7 @@ extern "C" {
 #endif
 
 #undef jSSC_NATIVE_LIB_VERSION
-#define jSSC_NATIVE_LIB_VERSION "2.8"
+#define jSSC_NATIVE_LIB_VERSION "2.9"
 
 #undef jssc_SerialNativeInterface_OS_LINUX
 #define jssc_SerialNativeInterface_OS_LINUX 0L

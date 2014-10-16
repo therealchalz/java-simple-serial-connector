@@ -59,14 +59,23 @@ long getTimePreciseMicros(JNIEnv *env) {
 /*
  * Updates the supplied timeval struct with the next timeout to use for a select call,
  * based on the timeoutDeadline and the pollPeriodMillis parameters.
- * returns 0 if we should block forever (and thus the time* is undefined), returns
- * 1 if the time* has been filled with the next unblock timeout for select().
+ * If timeoutDeadline is 0 it is considered to not block at all. If timeoutDeadline
+ * is <0 then it is considered to block forever.
+ * Returns 1 if we should block forever (and thus the time* is undefined), returns
+ * 0 if the time* has been filled with the next unblock timeout for select().
  */
 int getNextTimeout(JNIEnv *env, struct timeval *time, long timeoutDeadline, long pollPeriodMillis) {
-    if (time == NULL)
-        return 0;
 
-    if (timeoutDeadline != 0) {
+    if (time == NULL)
+        return 1;
+
+    if (timeoutDeadline == 0) {
+        time->tv_sec=0;
+        time->tv_usec=0;
+        return 0;
+    }
+
+    if (timeoutDeadline > 0) {
         long currentTime = getTimePreciseMicros(env);
         long timeUntilTimeout = timeoutDeadline - currentTime;
 
@@ -74,11 +83,11 @@ int getNextTimeout(JNIEnv *env, struct timeval *time, long timeoutDeadline, long
             time->tv_sec=0;
             time->tv_usec=0;
         } else {
-            if (pollPeriodMillis != 0) {
+            if (pollPeriodMillis > 0) {
                 long pollPeriodMicros = pollPeriodMillis * 1000;
                 if (pollPeriodMicros < timeUntilTimeout) {
-                    time->tv_sec = pollPeriodMicros / 1000000;
-                    time->tv_usec = pollPeriodMicros % 1000000;
+                    time->tv_sec = pollPeriodMillis / 1000;
+                    time->tv_usec = (pollPeriodMillis % 1000)*1000;
                 } else {
                     time->tv_sec = timeUntilTimeout / 1000000;
                     time->tv_usec = timeUntilTimeout % 1000000;
@@ -88,13 +97,19 @@ int getNextTimeout(JNIEnv *env, struct timeval *time, long timeoutDeadline, long
                 time->tv_usec = timeUntilTimeout % 1000000;
             }
         }
-        return 1;
-    } else if (pollPeriodMillis != 0) {
-        time->tv_sec = pollPeriodMillis / 1000000;
-        time->tv_usec = pollPeriodMillis % 1000000;
-        return 1;
+        return 0;
     }
-    return 0;    //Blocks forever
+
+    if (timeoutDeadline < 0) {
+        if (pollPeriodMillis > 0) {
+            time->tv_sec = pollPeriodMillis / 1000;
+            time->tv_usec = (pollPeriodMillis % 1000)*1000;
+            return 0;
+        } else {
+            return 1;
+        }
+    }
+    return 1;    //Blocks forever
 }
 
 /*

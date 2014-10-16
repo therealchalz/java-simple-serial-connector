@@ -62,6 +62,10 @@ public class SerialPortException extends IOException {
      * @since 2.3.0
      */
     final public static String TYPE_INCORRECT_SERIAL_PORT = "Incorrect serial port";
+    /**
+     * @since 2.9.0
+     */
+    final public static String TYPE_READ_INTERRUPTED = "Thread was interrupted while reading";
 
     private String portName;
     private String methodName;
