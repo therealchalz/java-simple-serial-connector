@@ -608,7 +608,11 @@ JNIEXPORT jbyteArray JNICALL Java_jssc_SerialNativeInterface_readBytes
         }
 
         if (selectRetVal > 0) {
-            int result = read(portHandle, lpBuffer + (byteCount - byteRemains), byteRemains);
+            int result;
+            if (byteCount > 0)
+                result = read(portHandle, lpBuffer + (byteCount - byteRemains), byteRemains);
+            else
+                result = read(portHandle, lpBuffer, byteRemains);
             if(result > 0){
                 if (byteCount == 0) {
                     byteCount = result;
@@ -633,9 +637,7 @@ JNIEXPORT jbyteArray JNICALL Java_jssc_SerialNativeInterface_readBytes
         if (byteCount == 0) {
             //Couldn't read any data on non-blocking read
             byteRemains = 0;
-            break;
         }
-
     } while(byteRemains > 0);
 
     jbyteArray returnArray = env->NewByteArray(byteCount-byteRemains);

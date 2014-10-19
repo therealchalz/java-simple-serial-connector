@@ -26,6 +26,7 @@
 #include <stdlib.h>
 #include <windows.h>
 #include "../jssc_SerialNativeInterface.h"
+#include "../jssc_Common.h"
 
 //#include <iostream>
 
@@ -248,32 +249,190 @@ JNIEXPORT jboolean JNICALL Java_jssc_SerialNativeInterface_writeBytes
     return returnValue;
 }
 
-/*
- * Read data from port
- * portHandle - port handle
- * byteCount - count of bytes for reading
- */
-JNIEXPORT jbyteArray JNICALL Java_jssc_SerialNativeInterface_readBytes
-  (JNIEnv *env, jobject object, jlong portHandle, jint byteCount){
-    HANDLE hComm = (HANDLE)portHandle;
-    DWORD lpNumberOfBytesTransferred;
-    DWORD lpNumberOfBytesRead;
-    OVERLAPPED *overlapped = new OVERLAPPED();
-    jbyte lpBuffer[byteCount];
-    jbyteArray returnArray = env->NewByteArray(byteCount);
-    overlapped->hEvent = CreateEventA(NULL, true, false, NULL);
-    if(ReadFile(hComm, lpBuffer, (DWORD)byteCount, &lpNumberOfBytesRead, overlapped)){
-        env->SetByteArrayRegion(returnArray, 0, byteCount, lpBuffer);
+DWORD getNextTimeoutWindows(JNIEnv *env, long timeoutDeadline, long pollPeriodMillis) {
+    struct timeval timeout;
+    char blockForever = getNextTimeout(env, &timeout, timeoutDeadline, pollPeriodMillis);
+    
+    if (blockForever) {
+        return INFINITE;
     }
-    else if(GetLastError() == ERROR_IO_PENDING){
-        if(WaitForSingleObject(overlapped->hEvent, INFINITE) == WAIT_OBJECT_0){
-            if(GetOverlappedResult(hComm, overlapped, &lpNumberOfBytesTransferred, false)){
-                env->SetByteArrayRegion(returnArray, 0, byteCount, lpBuffer);
+
+    DWORD millisecondTimeout = timeout.tv_sec*1000 + timeout.tv_usec/1000;
+    return millisecondTimeout;
+}
+
+void getBuffersBytesCount(HANDLE hComm, jint* retVals) {
+
+    DWORD lpErrors;
+    COMSTAT *comstat = new COMSTAT();
+    if(ClearCommError(hComm, &lpErrors, comstat)){
+        retVals[0] = (jint)comstat->cbInQue;
+        retVals[1] = (jint)comstat->cbOutQue;
+    } else {
+        retVals[0] = -1;
+        retVals[1] = -1;
+    }
+    delete comstat;
+}
+
+    /**
+     * Read data from port
+     * 
+     * @param portHandle handle of opened port
+     *
+     * @param byteCount number of bytes to block and wait for, or 0 to return immediately
+     * with whatever data is available. If timeoutMilliseconds is 0 and byteCount
+     * is positive, then immediately returns with at most byteCount bytes (possibly 0).
+     *
+     * @param timeoutMilliseconds the maximum number of milliseconds to wait for byteCount
+     * bytes to arrive. Set to 0 to return immediately. If negative, blocks indefinitely.
+     * This argument is ignored if byteCount is set to 0.
+     *
+     * @param pollPeriodMillis how often to check if the thread has been interrupted. Set
+     * to 0 to disable periodic polling of the thread interrupt status.
+     *
+     * @param exceptionOnTimeout function will throw a SerialPortTimeoutException if this parameter
+     * is set to true and the timeout expires before byteCount bytes are read. If this parameter
+     * is set to false, then upon timeout, this function will return a (possibly length 0)
+     * array of the bytes already read.
+     * 
+     * @return array of read bytes
+     * @throws InterruptedException if the java thread is interrupted while blocking 
+     * @throws SerialPortTimeoutException if the timeout was reached and exceptionOnTimeout is true
+     */
+JNIEXPORT jbyteArray JNICALL Java_jssc_SerialNativeInterface_readBytes
+  (JNIEnv *env, jobject object, jlong portHandle, jint byteCount,
+    jlong timeoutMilliseconds, jlong pollPeriodMillis, jboolean exceptionOnTimeout){
+    HANDLE hComm = (HANDLE)portHandle;
+    DWORD timeoutDeadline = 0;
+    DWORD byteRemains = byteCount;
+    
+    jclass threadClass = env->FindClass("java/lang/Thread");
+    jmethodID areWeInterruptedMethod = env->GetStaticMethodID(threadClass, "interrupted", "()Z");
+
+    if (byteCount < 0)
+        byteCount = 0;
+    if (pollPeriodMillis < 0)
+        pollPeriodMillis = 0;
+
+    if (timeoutMilliseconds > 0) {  //Block until timeout
+        timeoutDeadline = getTimePreciseMicros(env) + timeoutMilliseconds*1000;
+    } else if (timeoutMilliseconds == 0) {   //Do not block
+        timeoutDeadline = 0;
+    } else {    //Block forever
+        timeoutDeadline = -1;
+    }
+
+    DWORD waitMillis=0;
+    if (byteCount == 0) {
+        //Return right away
+        waitMillis = 0;
+        jint bufferCounts[2];
+        getBuffersBytesCount(hComm, bufferCounts);
+        if (bufferCounts[0] == 0) {
+            byteRemains = 0;
+        } else {
+            byteRemains = bufferCounts[0];
+        }
+    } else if (byteCount != 0 && timeoutDeadline == 0) {
+        //Return right away
+        waitMillis = 0;
+        jint bufferCounts[2];
+        getBuffersBytesCount(hComm, bufferCounts);
+        if (bufferCounts[0] == 0) {
+            byteRemains = 0;
+        } else {
+            if (bufferCounts[0] < byteCount)
+                byteRemains = bufferCounts[0];
+            else
+                byteRemains = byteCount;
+            byteCount = 0;
+        }
+    }else {
+        waitMillis = getNextTimeoutWindows(env, timeoutDeadline, pollPeriodMillis);
+    }
+    
+    jbyte *lpBuffer = new jbyte[byteRemains];
+    
+    while(byteRemains > 0){
+        OVERLAPPED *overlapped = new OVERLAPPED();
+        overlapped->hEvent = CreateEventA(NULL, true, false, NULL);
+        DWORD lpNumberOfBytesRead;
+        BOOL readFileRet;
+
+        if (byteCount == 0){
+            readFileRet = ReadFile(hComm, lpBuffer, byteRemains, &lpNumberOfBytesRead, overlapped);
+        } else {
+            readFileRet = ReadFile(hComm, lpBuffer + (byteCount - byteRemains), byteRemains, &lpNumberOfBytesRead, overlapped);
+        }
+        if(readFileRet){
+            if (byteCount == 0) {
+                byteCount = lpNumberOfBytesRead;
+                byteRemains = 0;
+            } else {
+                byteRemains -= lpNumberOfBytesRead;
+            }
+        } else if(GetLastError() == ERROR_IO_PENDING) {
+            if (byteCount == 0) {
+                byteRemains = 0;
+                CancelIo(hComm);
+                CloseHandle(overlapped->hEvent);
+                delete overlapped;
+                break;
+            }
+
+            waitMillis = getNextTimeoutWindows(env, timeoutDeadline, pollPeriodMillis);
+
+            DWORD waitRetVal = WAIT_TIMEOUT;
+            while (waitRetVal == WAIT_TIMEOUT && waitMillis > 0) {
+                waitRetVal = WaitForSingleObject(overlapped->hEvent, waitMillis);
+                waitMillis = getNextTimeoutWindows(env, timeoutDeadline, pollPeriodMillis);
+                // Check if the java thread has been interrupted, and if so, throw the exception
+                if (env->CallStaticBooleanMethod(threadClass, areWeInterruptedMethod)) {
+                    jclass excClass = env->FindClass("java/lang/InterruptedException");
+                    env->ThrowNew(excClass, "Interrupted while waiting for serial data");
+                    // It shouldn't matter what we return, the exception will be thrown right away
+                    CancelIo(hComm);
+                    CloseHandle(overlapped->hEvent);
+                    delete overlapped;
+                    goto done;
+                }
+            }
+            if(waitRetVal == WAIT_OBJECT_0){
+                if(GetOverlappedResult(hComm, overlapped, &lpNumberOfBytesRead, false)){
+                    byteRemains -= lpNumberOfBytesRead;
+                }
+            } else {
+                CancelIo(hComm);
             }
         }
+        
+        // Check if we've timed out and if so, throw the exception or return the data
+        if (byteRemains > 0 && byteCount != 0) {
+            waitMillis = getNextTimeoutWindows(env, timeoutDeadline, pollPeriodMillis);
+            if (waitMillis == 0) {
+                if (exceptionOnTimeout) {
+                    throwTimeoutException(env, "NoPort", "<native>readBytes()", timeoutMilliseconds);
+                }
+                CloseHandle(overlapped->hEvent);
+                delete overlapped;
+                break;
+            }
+        }
+
+        if (byteCount == 0) {
+            //Couldn't read any data on non-blocking read
+            byteRemains = 0;
+        }
+        CloseHandle(overlapped->hEvent);
+        delete overlapped;
     }
-    CloseHandle(overlapped->hEvent);
-    delete overlapped;
+    done:
+
+    jbyteArray returnArray = env->NewByteArray(byteCount-byteRemains);
+    if (byteCount > 0)
+        env->SetByteArrayRegion(returnArray, 0, byteCount-byteRemains, lpBuffer);
+    delete lpBuffer;
     return returnArray;
 }
 
@@ -282,24 +441,12 @@ JNIEXPORT jbyteArray JNICALL Java_jssc_SerialNativeInterface_readBytes
  */
 JNIEXPORT jintArray JNICALL Java_jssc_SerialNativeInterface_getBuffersBytesCount
   (JNIEnv *env, jobject object, jlong portHandle){
-	HANDLE hComm = (HANDLE)portHandle;
-	jint returnValues[2];
-	returnValues[0] = -1;
-	returnValues[1] = -1;
-	jintArray returnArray = env->NewIntArray(2);
-	DWORD lpErrors;
-	COMSTAT *comstat = new COMSTAT();
-	if(ClearCommError(hComm, &lpErrors, comstat)){
-		returnValues[0] = (jint)comstat->cbInQue;
-		returnValues[1] = (jint)comstat->cbOutQue;
-	}
-	else {
-		returnValues[0] = -1;
-		returnValues[1] = -1;
-	}
-	delete comstat;
-	env->SetIntArrayRegion(returnArray, 0, 2, returnValues);
-	return returnArray;
+    HANDLE hComm = (HANDLE)portHandle;
+    jint returnValues[2];
+    jintArray returnArray = env->NewIntArray(2);
+    getBuffersBytesCount(hComm, returnValues);
+    env->SetIntArrayRegion(returnArray, 0, 2, returnValues);
+    return returnArray;
 }
 
 //since 0.8 ->
