@@ -561,12 +561,37 @@ public class SerialPort {
     }
     
     /**
+     * Low level reading data from the port.
+     * 
+     * @param byteCount number of bytes to block and wait for, or 0 to return immediately
+     * with whatever data is available. If timeoutMilliseconds is 0 and byteCount
+     * is positive, then immediately returns with at most byteCount bytes (possibly 0).
+     *
+     * @param timeoutMilliseconds the maximum number of milliseconds to wait for byteCount
+     * bytes to arrive. Set to 0 to return immediately. If negative, blocks indefinitely.
+     * This argument is ignored if byteCount is set to 0.
+     *
+     * @param exceptionOnTimeout function will throw a SerialPortTimeoutException if this parameter
+     * is set to true and the timeout expires before byteCount bytes are read. If this parameter
+     * is set to false, then upon timeout, this function will return a (possibly length 0)
+     * array of the bytes already read.
+     * 
+     * @return array of read bytes
+     * @throws SerialPortException if the java thread is interrupted while blocking or some other error occurred.
+     * @throws SerialPortTimeoutException if the timeout was reached and exceptionOnTimeout is true
+     */
+    public byte[] readBytesWithTimeout(int byteCount,
+            long timeoutMilliseconds, boolean exceptionOnTimeout) throws SerialPortException {
+        return readBytesWithTimeout(byteCount, timeoutMilliseconds, this.interruptPollingPeriodMillis, exceptionOnTimeout);
+    }
+    
+    /**
      * Read a byte array from the port.
      * Blocks until all the data is read, the timeout is hit, or an exception occurs.
      *
      * @param byteCount count of bytes for reading
      * @param timeout timeout in milliseconds.  Set to 0 to return immediately, or negative to
-     * block forever.
+     * block forever.  If not enough data is available, then throws an exception.
      *
      * @return byte array with "byteCount" length
      *

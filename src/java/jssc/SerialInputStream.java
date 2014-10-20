@@ -45,8 +45,10 @@ public class SerialInputStream extends InputStream {
 	/** Reads the next byte from the port.
 	 * If the timeout of this stream has been set, then this method
 	 * blocks until data is available or until the timeout has elapsed.
-	 * If the timeout is not set or has been set to 0, then this method
-	 * blocks indefinitely.
+	 * If the timeout is not set or has been set to -1, then this method
+	 * blocks indefinitely.  If the timeout is set to 0, then this method 
+	 * attempts to return immediately.  If there is no data available, then
+	 * throws an exception.
 	 */
 	@Override
 	public int read() throws IOException {
@@ -56,22 +58,19 @@ public class SerialInputStream extends InputStream {
 	/** The same contract as {@link #read()}, except overrides
 	 * this stream's default timeout with the given
 	 * timeout in milliseconds.
-	 * @param timeout The timeout in milliseconds.
+	 * @param timeout The timeout in milliseconds. -1 to block forever. 0 to 
+	 * attempt to return immediately.  If there is not data available, then
+	 * throws an exception.
 	 * @return The read byte.
 	 * @throws IOException On serial port error or timeout
 	 */
 	public int read(int timeout) throws IOException {
 		byte[] buf = new byte[1];
-		try {
-			if (timeout > 0) {
-				buf = serialPort.readBytes(1, timeout);
-			} else {
-				buf = serialPort.readBytes(1);
-			}
-			return buf[0];
-		} catch (Exception e) {
-			throw new IOException(e);
+		byte[] data = serialPort.readBytes(1, timeout);
+		if (data.length==0) {
+			throw new SerialPortTimeoutException(serialPort.getPortName(), "read(int timeout)", timeout);
 		}
+		return data[0];
 	}
 	
 	/** Non-blocking read of up to buf.length bytes from the stream.
@@ -100,18 +99,9 @@ public class SerialInputStream extends InputStream {
 		if (buf.length < offset + length)
 			length = buf.length - offset;
 		
-		int available = this.available();
-		
-		if (available > length)
-			available = length;
-		
-		try {
-			byte[] readBuf = serialPort.readBytes(available);
-			System.arraycopy(readBuf, 0, buf, offset, readBuf.length);
-			return readBuf.length;
-		} catch (Exception e) {
-			throw new IOException(e);
-		}
+		byte[] readBuf = serialPort.readBytesWithTimeout(length, 0, false);
+		System.arraycopy(readBuf, 0, buf, offset, readBuf.length);
+		return readBuf.length;
 	}
 	
 	/** Blocks until buf.length bytes are read, an error occurs, or the default timeout is hit (if specified).
@@ -160,16 +150,9 @@ public class SerialInputStream extends InputStream {
 		if (buf.length < offset + length)
 			throw new IOException("Not enough buffer space for serial data");
 		
-		if (timeout == 0)
-			return read(buf, offset, length);
-		
-		try {
-			byte[] readBuf = serialPort.readBytes(length, timeout);
-			System.arraycopy(readBuf, 0, buf, offset, readBuf.length);
-			return readBuf.length;
-		} catch (Exception e) {
-			throw new IOException(e);
-		}
+		byte[] readBuf = serialPort.readBytesWithTimeout(length, timeout, true);
+		System.arraycopy(readBuf, 0, buf, offset, readBuf.length);
+		return readBuf.length;
 	}
 	
 	@Override
