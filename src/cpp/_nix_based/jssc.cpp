@@ -42,10 +42,13 @@
 #endif
 #ifdef __APPLE__
     #include <serial/ioss.h>//Needed for IOSSIOSPEED in Mac OS X (Non standard baudrate)
+    #include <mach/clock.h>
+    #include <mach/mach.h>
 #endif
 
 #include <jni.h>
 #include "../jssc_SerialNativeInterface.h"
+#include "../jssc_Common.h"
 
 //#include <iostream> //-lCstd use for Solaris linker
 
@@ -523,49 +526,123 @@ JNIEXPORT jboolean JNICALL Java_jssc_SerialNativeInterface_writeBytes
     return result == bufferSize ? JNI_TRUE : JNI_FALSE;
 }
 
-/* OK */
-/*
- * Reading data from the port
- *
- * Rewrited in 2.5.0 (using select() function for correct block reading in MacOS X)
- */
+    /**
+     * Read data from port
+     * 
+     * @param portHandle handle of opened port
+     *
+     * @param byteCount number of bytes to block and wait for, or 0 to return immediately
+     * with whatever data is available. If timeoutMilliseconds is 0 and byteCount
+     * is positive, then immediately returns with at most byteCount bytes (possibly 0).
+     *
+     * @param timeoutMilliseconds the maximum number of milliseconds to wait for byteCount
+     * bytes to arrive. Set to 0 to return immediately. If negative, blocks indefinitely.
+     * This argument is ignored if byteCount is set to 0.
+     *
+     * @param pollPeriodMillis how often to check if the thread has been interrupted. Set
+     * to 0 to disable periodic polling of the thread interrupt status.
+     *
+     * @param exceptionOnTimeout function will throw a SerialPortTimeoutException if this parameter
+     * is set to true and the timeout expires before byteCount bytes are read. If this parameter
+     * is set to false, then upon timeout, this function will return a (possibly length 0)
+     * array of the bytes already read.
+     * 
+     * @return array of read bytes
+     * @throws InterruptedException if the java thread is interrupted while blocking 
+     * @throws SerialPortTimeoutException if the timeout was reached and exceptionOnTimeout is true
+     */
 JNIEXPORT jbyteArray JNICALL Java_jssc_SerialNativeInterface_readBytes
-  (JNIEnv *env, jobject object, jlong portHandle, jint byteCount){
+  (JNIEnv *env, jobject object, jlong portHandle, jint byteCount,
+    jlong timeoutMilliseconds, jlong pollPeriodMillis, jboolean exceptionOnTimeout){
+
     fd_set read_fd_set;
-    jbyte *lpBuffer = new jbyte[byteCount];
     int byteRemains = byteCount;
     struct timeval timeout;
     int selectRetVal;
-
+    long timeoutDeadline = 0;
     jclass threadClass = env->FindClass("java/lang/Thread");
     jmethodID areWeInterruptedMethod = env->GetStaticMethodID(threadClass, "interrupted", "()Z");
 
-    while(byteRemains > 0) {
+    if (byteCount < 0)
+        byteCount = 0;
+    if (pollPeriodMillis < 0)
+        pollPeriodMillis = 0;
+
+    if (timeoutMilliseconds > 0) {  //Block until timeout
+        timeoutDeadline = getTimePreciseMicros(env) + timeoutMilliseconds*1000;
+    } else if (timeoutMilliseconds == 0) {   //Do not block
+        timeoutDeadline = 0;
+    } else {    //Block forever
+        timeoutDeadline = -1;
+    }
+
+    char blockForever;
+    if (byteCount == 0) {
+        //Return right away
+        timeout.tv_sec=0;
+        timeout.tv_usec=0;
+        blockForever = 0;
+        byteRemains = 1024; //return max 1024 bytes when byteCount is 0;
+    } else {
+        blockForever = getNextTimeout(env, &timeout, timeoutDeadline, pollPeriodMillis);
+    }
+
+    jbyte *lpBuffer = new jbyte[byteRemains];
+
+    do {    //while(byteRemains > 0)
         FD_ZERO(&read_fd_set);
         FD_SET(portHandle, &read_fd_set);
-        timeout.tv_sec = 0;         // the timeout must be reset after every call to select()
-        timeout.tv_usec = 100000;   // timeout is 100ms
 
-        selectRetVal = select(portHandle + 1, &read_fd_set, NULL, NULL, &timeout);
+        if (blockForever) {
+            selectRetVal = select(portHandle + 1, &read_fd_set, NULL, NULL, NULL);
+        } else {
+            selectRetVal = select(portHandle + 1, &read_fd_set, NULL, NULL, &timeout);
+        }
 
         // Check if the java thread has been interrupted, and if so, throw the exception
         if (env->CallStaticBooleanMethod(threadClass, areWeInterruptedMethod)) {
             jclass excClass = env->FindClass("java/lang/InterruptedException");
             env->ThrowNew(excClass, "Interrupted while waiting for serial data");
-            jbyteArray fakeRet = env->NewByteArray(0);
-            return fakeRet; // It shouldn't matter what we return, the exception will be thrown right away
+            // It shouldn't matter what we return, the exception will be thrown right away
+            break;
         }
 
         if (selectRetVal > 0) {
-            int result = read(portHandle, lpBuffer + (byteCount - byteRemains), byteRemains);
+            int result;
+            if (byteCount > 0)
+                result = read(portHandle, lpBuffer + (byteCount - byteRemains), byteRemains);
+            else
+                result = read(portHandle, lpBuffer, byteRemains);
             if(result > 0){
-                byteRemains -= result;
+                if (byteCount == 0) {
+                    byteCount = result;
+                    byteRemains = 0;
+                } else {
+                    byteRemains -= result;
+                }
             }
         }
-    }
-    FD_CLR(portHandle, &read_fd_set);
-    jbyteArray returnArray = env->NewByteArray(byteCount);
-    env->SetByteArrayRegion(returnArray, 0, byteCount, lpBuffer);
+
+        // Check if we've timed out and if so, throw the exception or return the data
+        if (byteRemains > 0 && byteCount != 0) {
+            blockForever = getNextTimeout(env, &timeout, timeoutDeadline, pollPeriodMillis);
+            if (!blockForever && (timeout.tv_sec == 0 && timeout.tv_usec == 0)) {
+                if (exceptionOnTimeout) {
+                    throwTimeoutException(env, "NoPort", "<native>readBytes()", timeoutMilliseconds);
+                }
+                break;
+            }
+        }
+
+        if (byteCount == 0) {
+            //Couldn't read any data on non-blocking read
+            byteRemains = 0;
+        }
+    } while(byteRemains > 0);
+
+    jbyteArray returnArray = env->NewByteArray(byteCount-byteRemains);
+    if (byteCount > 0)
+        env->SetByteArrayRegion(returnArray, 0, byteCount-byteRemains, lpBuffer);
     delete lpBuffer;
     return returnArray;
 }

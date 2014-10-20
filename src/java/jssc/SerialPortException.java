@@ -24,11 +24,13 @@
  */
 package jssc;
 
+import java.io.IOException;
+
 /**
  *
  * @author scream3r
  */
-public class SerialPortException extends Exception {
+public class SerialPortException extends IOException {
 
     final public static String TYPE_PORT_ALREADY_OPENED = "Port already opened";
     final public static String TYPE_PORT_NOT_OPENED = "Port not opened";
@@ -60,6 +62,10 @@ public class SerialPortException extends Exception {
      * @since 2.3.0
      */
     final public static String TYPE_INCORRECT_SERIAL_PORT = "Incorrect serial port";
+    /**
+     * @since 2.9.0
+     */
+    final public static String TYPE_READ_INTERRUPTED = "Thread was interrupted while reading";
 
     private String portName;
     private String methodName;

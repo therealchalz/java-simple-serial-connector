@@ -26,7 +26,6 @@ package jssc;
 
 import java.io.UnsupportedEncodingException;
 import java.lang.reflect.Method;
-import java.nio.charset.Charset;
 
 /**
  *
@@ -41,6 +40,8 @@ public class SerialPort {
     private boolean portOpened = false;
     private boolean maskAssigned = false;
     private boolean eventListenerAdded = false;
+    private int interruptPollingPeriodMillis = 50;	/*How often the blocking native read 
+    implementation should poll the thread's interrupt status.*/
 
     //since 2.2.0 ->
     private Method methodErrorOccurred = null;
@@ -424,7 +425,8 @@ public class SerialPort {
     }
 
     /**
-     * Read byte array from port
+     * Read a byte array from the port.
+     * Blocks until all the data is read or an exception occurs.
      *
      * @param byteCount count of bytes for reading
      * 
@@ -433,20 +435,19 @@ public class SerialPort {
      * @throws SerialPortException
      */
     public byte[] readBytes(int byteCount) throws SerialPortException {
-        checkPortOpened("readBytes()");
-        try {
-            return serialInterface.readBytes(portHandle, byteCount);
-        } catch (InterruptedException e) {
-            throw new SerialPortException(portName, "readBytes", SerialPortException.TYPE_LISTENER_THREAD_INTERRUPTED);
+        if (byteCount <= 0) {
+            return new byte[0];
         }
+        return readBytes(byteCount, -1);
     }
 
     /**
-     * Read string from port
+     * Read a String from the port, converted using the platform's default charset.
+     * Blocks until all the data is read or an exception occurs.
      *
-     * @param byteCount count of bytes for reading
+     * @param byteCount number of bytes to read
      *
-     * @return byte array with "byteCount" length converted to String
+     * @return String of byteCount bytes converted using the platform's default charset.
      *
      * @throws SerialPortException
      *
@@ -454,12 +455,15 @@ public class SerialPort {
      */
     public String readString(int byteCount) throws SerialPortException {
         checkPortOpened("readString()");
-        return new String(readBytes(byteCount));
+        if (byteCount <= 0)
+            return "";
+        return readString(byteCount, -1);
     }
 
     /**
      * Read Hex string from port (example: FF 0A FF). Separator by default is a space
-     *
+     * Blocks until all the data is read or an exception occurs.
+     * 
      * @param byteCount count of bytes for reading
      *
      * @return byte array with "byteCount" length converted to Hexadecimal String
@@ -474,7 +478,8 @@ public class SerialPort {
     }
 
     /**
-     * Read Hex string from port with setted separator (example if separator is "::": FF::0A::FF)
+     * Read Hex string from the port with given separator (eg: if separator is "::" returns FF::0A::FF)
+     * Blocks until all the data is read or an exception occurs.
      *
      * @param byteCount count of bytes for reading
      *
@@ -485,11 +490,163 @@ public class SerialPort {
      * @since 0.8
      */
     public String readHexString(int byteCount, String separator) throws SerialPortException {
+    	return readHexString(byteCount, separator, 0);
+    }
+
+    /**
+     * Read Hex String array from port
+     * Blocks until all the data is read or an exception occurs.
+     *
+     * @param byteCount count of bytes for reading
+     * 
+     * @return String array with "byteCount" length and Hexadecimal String values
+     *
+     * @throws SerialPortException
+     *
+     * @since 0.8
+     */
+    public String[] readHexStringArray(int byteCount) throws SerialPortException {
+        return readHexStringArray(byteCount, 0);
+    }
+
+    /**
+     * Read int array from port.
+     * Blocks until all the data is read or an exception occurs.
+     *
+     * @param byteCount count of bytes for reading
+     *
+     * @return int array with values in range from 0 to 255
+     *
+     * @throws SerialPortException
+     *
+     * @since 0.8
+     */
+    public int[] readIntArray(int byteCount) throws SerialPortException {
+        return readIntArray(byteCount, 0);
+    }
+    
+    /**
+     * Low level reading data from the port.
+     * 
+     * @param byteCount number of bytes to block and wait for, or 0 to return immediately
+     * with whatever data is available. If timeoutMilliseconds is 0 and byteCount
+     * is positive, then immediately returns with at most byteCount bytes (possibly 0).
+     *
+     * @param timeoutMilliseconds the maximum number of milliseconds to wait for byteCount
+     * bytes to arrive. Set to 0 to return immediately. If negative, blocks indefinitely.
+     * This argument is ignored if byteCount is set to 0.
+     *
+     * @param pollPeriodMillis how often to check if the thread has been interrupted. Set
+     * to 0 to disable periodic polling of the thread interrupt status.
+     *
+     * @param exceptionOnTimeout function will throw a SerialPortTimeoutException if this parameter
+     * is set to true and the timeout expires before byteCount bytes are read. If this parameter
+     * is set to false, then upon timeout, this function will return a (possibly length 0)
+     * array of the bytes already read.
+     * 
+     * @return array of read bytes
+     * @throws SerialPortException if the java thread is interrupted while blocking or some other error occurred.
+     * @throws SerialPortTimeoutException if the timeout was reached and exceptionOnTimeout is true
+     */
+    public byte[] readBytesWithTimeout(int byteCount, 
+            long timeoutMilliseconds, int interruptPollPeriod, 
+            boolean exceptionOnTimeout) throws SerialPortException {
+        
+        checkPortOpened("readBytesWithTimeout()");
+        try {
+            return serialInterface.readBytes(portHandle, byteCount, timeoutMilliseconds, interruptPollPeriod, exceptionOnTimeout);
+        } catch (InterruptedException e) {
+            throw new SerialPortException(portName, "readBytesWithTimeout", SerialPortException.TYPE_READ_INTERRUPTED);
+        }
+    }
+    
+    /**
+     * Read a byte array from the port.
+     * Blocks until all the data is read, the timeout is hit, or an exception occurs.
+     *
+     * @param byteCount count of bytes for reading
+     * @param timeout timeout in milliseconds.  Set to 0 to return immediately, or negative to
+     * block forever.
+     *
+     * @return byte array with "byteCount" length
+     *
+     * @throws SerialPortException
+     * @throws SerialPortTimeoutException
+     *
+     * @since 2.0
+     */
+    public byte[] readBytes(int byteCount, int timeout) throws SerialPortException, SerialPortTimeoutException {
+        checkPortOpened("readBytes()");
+        if (byteCount <= 0)
+            return new byte[0];
+        return readBytesWithTimeout(byteCount, timeout, interruptPollingPeriodMillis, true);
+    }
+
+    /**
+     * Read string from port, converted using the platform's default charset.
+     * Blocks until all the data is read, the timeout is hit, or an exception occurs.
+     * 
+     * @param byteCount count of bytes for reading from the serial port.
+     * @param timeout timeout in milliseconds.  Set to 0 to return immediately, or negative to
+     * block forever.
+     *
+     * @return byte array with "byteCount" length converted to String
+     *
+     * @throws SerialPortException
+     * @throws SerialPortTimeoutException
+     *
+     * @since 2.0
+     */
+    public String readString(int byteCount, int timeout) throws SerialPortException, SerialPortTimeoutException {
+        checkPortOpened("readString()");
+        return new String(readBytes(byteCount, timeout));
+    }
+
+    /**
+     * Read Hex string from port (example: FF 0A FF). Separator by default is a space
+     * Blocks until all the data is read, the timeout is hit, or an exception occurs.
+     * 
+     * @param byteCount count of bytes for reading
+     * @param timeout timeout in milliseconds.  Set to 0 to return immediately, or negative to
+     * block forever.
+     *
+     * @return byte array with "byteCount" length converted to Hexadecimal String
+     *
+     * @throws SerialPortException
+     * @throws SerialPortTimeoutException
+     *
+     * @since 2.0
+     */
+    public String readHexString(int byteCount, int timeout) throws SerialPortException, SerialPortTimeoutException {
         checkPortOpened("readHexString()");
-        String[] strBuffer = readHexStringArray(byteCount);
+        return readHexString(byteCount, " ", timeout);
+    }
+
+    /**
+     * Read Hex string from port with setted separator (example if separator is "::": FF::0A::FF)
+     * Blocks until all the data is read, the timeout is hit, or an exception occurs.
+     * 
+     * @param byteCount count of bytes for reading
+     * @param timeout timeout in milliseconds.  Set to 0 to return immediately, or negative to
+     * block forever.
+     *
+     * @return byte array with "byteCount" length converted to Hexadecimal String
+     *
+     * @throws SerialPortException
+     * @throws SerialPortTimeoutException
+     *
+     * @since 2.0
+     */
+    public String readHexString(int byteCount, String separator, int timeout) throws SerialPortException, SerialPortTimeoutException {
+        checkPortOpened("readHexString()");
+        String[] strBuffer = readHexStringArray(byteCount, timeout);
+        return hexStringFromHexStringArray(strBuffer, separator);
+    }
+    
+    private String hexStringFromHexStringArray(String[] data, String separator) {
         String returnString = "";
         boolean insertSeparator = false;
-        for(String value : strBuffer){
+        for(String value : data){
             if(insertSeparator){
                 returnString += separator;
             }
@@ -501,157 +658,11 @@ public class SerialPort {
 
     /**
      * Read Hex String array from port
+     * Blocks until all the data is read, the timeout is hit, or an exception occurs.
      *
      * @param byteCount count of bytes for reading
-     * 
-     * @return String array with "byteCount" length and Hexadecimal String values
-     *
-     * @throws SerialPortException
-     *
-     * @since 0.8
-     */
-    public String[] readHexStringArray(int byteCount) throws SerialPortException {
-        checkPortOpened("readHexStringArray()");
-        int[] intBuffer = readIntArray(byteCount);
-        String[] strBuffer = new String[intBuffer.length];
-        for(int i = 0; i < intBuffer.length; i++){
-            String value = Integer.toHexString(intBuffer[i]).toUpperCase();
-            if(value.length() == 1) {
-                value = "0" + value;
-            }
-            strBuffer[i] = value;
-        }
-        return strBuffer;
-    }
-
-    /**
-     * Read int array from port
-     *
-     * @param byteCount count of bytes for reading
-     *
-     * @return int array with values in range from 0 to 255
-     *
-     * @throws SerialPortException
-     *
-     * @since 0.8
-     */
-    public int[] readIntArray(int byteCount) throws SerialPortException {
-        checkPortOpened("readIntArray()");
-        byte[] buffer = readBytes(byteCount);
-        int[] intBuffer = new int[buffer.length];
-        for(int i = 0; i < buffer.length; i++){
-            if(buffer[i] < 0){
-                intBuffer[i] = 256 + buffer[i];
-            }
-            else {
-                intBuffer[i] = buffer[i];
-            }
-        }
-        return intBuffer;
-    }
-
-    private void waitBytesWithTimeout(String methodName, int byteCount, int timeout) throws SerialPortException, SerialPortTimeoutException {
-        checkPortOpened("waitBytesWithTimeout()");
-        boolean timeIsOut = true;
-        long startTime = System.nanoTime();
-        while((System.nanoTime() - startTime) < timeout * 1000000){
-            if(getInputBufferBytesCount() >= byteCount){
-                timeIsOut = false;
-                break;
-            }
-            try {
-                Thread.sleep(0, 100);//Need to sleep some time to prevent high CPU loading
-            }
-            catch (InterruptedException ex) {
-                throw new SerialPortException(portName, methodName, SerialPortException.TYPE_LISTENER_THREAD_INTERRUPTED);
-            }
-        }
-        if(timeIsOut){
-            throw new SerialPortTimeoutException(portName, methodName, timeout);
-        }
-    }
-
-    /**
-     * Read byte array from port
-     *
-     * @param byteCount count of bytes for reading
-     * @param timeout timeout in milliseconds
-     *
-     * @return byte array with "byteCount" length
-     *
-     * @throws SerialPortException
-     * @throws SerialPortTimeoutException
-     *
-     * @since 2.0
-     */
-    public byte[] readBytes(int byteCount, int timeout) throws SerialPortException, SerialPortTimeoutException {
-        checkPortOpened("readBytes()");
-        waitBytesWithTimeout("readBytes()", byteCount, timeout);
-        return readBytes(byteCount);
-    }
-
-    /**
-     * Read string from port
-     *
-     * @param byteCount count of bytes for reading
-     * @param timeout timeout in milliseconds
-     *
-     * @return byte array with "byteCount" length converted to String
-     *
-     * @throws SerialPortException
-     * @throws SerialPortTimeoutException
-     *
-     * @since 2.0
-     */
-    public String readString(int byteCount, int timeout) throws SerialPortException, SerialPortTimeoutException {
-        checkPortOpened("readString()");
-        waitBytesWithTimeout("readString()", byteCount, timeout);
-        return readString(byteCount);
-    }
-
-    /**
-     * Read Hex string from port (example: FF 0A FF). Separator by default is a space
-     *
-     * @param byteCount count of bytes for reading
-     * @param timeout timeout in milliseconds
-     *
-     * @return byte array with "byteCount" length converted to Hexadecimal String
-     *
-     * @throws SerialPortException
-     * @throws SerialPortTimeoutException
-     *
-     * @since 2.0
-     */
-    public String readHexString(int byteCount, int timeout) throws SerialPortException, SerialPortTimeoutException {
-        checkPortOpened("readHexString()");
-        waitBytesWithTimeout("readHexString()", byteCount, timeout);
-        return readHexString(byteCount);
-    }
-
-    /**
-     * Read Hex string from port with setted separator (example if separator is "::": FF::0A::FF)
-     *
-     * @param byteCount count of bytes for reading
-     * @param timeout timeout in milliseconds
-     *
-     * @return byte array with "byteCount" length converted to Hexadecimal String
-     *
-     * @throws SerialPortException
-     * @throws SerialPortTimeoutException
-     *
-     * @since 2.0
-     */
-    public String readHexString(int byteCount, String separator, int timeout) throws SerialPortException, SerialPortTimeoutException {
-        checkPortOpened("readHexString()");
-        waitBytesWithTimeout("readHexString()", byteCount, timeout);
-        return readHexString(byteCount, separator);
-    }
-
-    /**
-     * Read Hex String array from port
-     *
-     * @param byteCount count of bytes for reading
-     * @param timeout timeout in milliseconds
+     * @param timeout timeout in milliseconds.  Set to 0 to return immediately, or negative to
+     * block forever.
      *
      * @return String array with "byteCount" length and Hexadecimal String values
      *
@@ -662,15 +673,29 @@ public class SerialPort {
      */
     public String[] readHexStringArray(int byteCount, int timeout) throws SerialPortException, SerialPortTimeoutException {
         checkPortOpened("readHexStringArray()");
-        waitBytesWithTimeout("readHexStringArray()", byteCount, timeout);
-        return readHexStringArray(byteCount);
+        int[] intBuffer = readIntArray(byteCount, timeout);
+        return hexStringArrayFromIntArray(intBuffer);
+    }
+    
+    private String[] hexStringArrayFromIntArray(int[] data) {
+        String[] strBuffer = new String[data.length];
+        for(int i = 0; i < data.length; i++){
+            String value = Integer.toHexString(data[i]).toUpperCase();
+            if(value.length() == 1) {
+                value = "0" + value;
+            }
+            strBuffer[i] = value;
+        }
+        return strBuffer;
     }
 
     /**
-     * Read int array from port
+     * Read an int array from the port.
+     * Blocks until all the data is read, the timeout is hit, or an exception occurs.
      *
      * @param byteCount count of bytes for reading
-     * @param timeout timeout in milliseconds
+     * @param timeout timeout in milliseconds.  Set to 0 to return immediately, or negative to
+     * block forever.
      *
      * @return int array with values in range from 0 to 255
      *
@@ -681,14 +706,26 @@ public class SerialPort {
      */
     public int[] readIntArray(int byteCount, int timeout) throws SerialPortException, SerialPortTimeoutException {
         checkPortOpened("readIntArray()");
-        waitBytesWithTimeout("readIntArray()", byteCount, timeout);
-        return readIntArray(byteCount);
+        byte[] buffer = readBytes(byteCount, timeout);
+        return intArrayFromBytes(buffer);
+    }
+    
+    private int[] intArrayFromBytes(byte[] data) {
+        int[] intBuffer = new int[data.length];
+        for(int i = 0; i < data.length; i++){
+            if(data[i] < 0){
+                intBuffer[i] = 256 + data[i];
+            } else {
+                intBuffer[i] = data[i];
+            }
+        }
+        return intBuffer;
     }
 
     /**
-     * Read all available bytes from port like a byte array
+     * Read all available bytes from the port as a byte array.
      *
-     * @return If input buffer is empty <b>null</b> will be returned, else byte array with all data from port
+     * @return null if input buffer is empty, otherwise a byte array of the available data
      *
      * @throws SerialPortException
      *
@@ -696,17 +733,17 @@ public class SerialPort {
      */
     public byte[] readBytes() throws SerialPortException {
         checkPortOpened("readBytes()");
-        int byteCount = getInputBufferBytesCount();
-        if(byteCount <= 0){
+        byte[] data = readBytesWithTimeout(0, 0, interruptPollingPeriodMillis, false);
+        if (data.length == 0)
             return null;
-        }
-        return readBytes(byteCount);
+        return data;
     }
 
     /**
-     * Read all available bytes from port like a String
+     * Read all available bytes from the port as a String, converted via the platform's
+     * default charset.
      *
-     * @return If input buffer is empty <b>null</b> will be returned, else byte array with all data from port converted to String
+     * @return null if input buffer is empty, otherwise the String representation of the available data
      *
      * @throws SerialPortException
      *
@@ -714,17 +751,18 @@ public class SerialPort {
      */
     public String readString() throws SerialPortException {
         checkPortOpened("readString()");
-        int byteCount = getInputBufferBytesCount();
-        if(byteCount <= 0){
+        byte[] data = readBytes();
+        if (data == null)
             return null;
-        }
-        return readString(byteCount);
+        return new String(data);
     }
 
     /**
-     * Read all available bytes from port like a Hex String
+     * Read all available bytes from the port as a Hex String
+     * The String is a sequence of hex bytes separated by spaces.
      *
-     * @return If input buffer is empty <b>null</b> will be returned, else byte array with all data from port converted to Hex String
+     * @return null if the input buffer is empty, otherwise a String of available
+     * data as hex bytes separated by spaces.
      *
      * @throws SerialPortException
      *
@@ -732,17 +770,14 @@ public class SerialPort {
      */
     public String readHexString() throws SerialPortException {
         checkPortOpened("readHexString()");
-        int byteCount = getInputBufferBytesCount();
-        if(byteCount <= 0){
-            return null;
-        }
-        return readHexString(byteCount);
+        return readHexString(" ");
     }
 
     /**
-     * Read all available bytes from port like a Hex String with setted separator
+     * Read all available bytes from the port as a Hex String with the given separator
      *
-     * @return If input buffer is empty <b>null</b> will be returned, else byte array with all data from port converted to Hex String
+     * @return null if the empty buffer is empty, otherwise a Hex String of the available
+     *  data with the given separator.
      *
      * @throws SerialPortException
      *
@@ -750,17 +785,15 @@ public class SerialPort {
      */
     public String readHexString(String separator) throws SerialPortException {
         checkPortOpened("readHexString()");
-        int byteCount = getInputBufferBytesCount();
-        if(byteCount <= 0){
-            return null;
-        }
-        return readHexString(byteCount, separator);
+        String[] strBuffer = readHexStringArray();
+        return hexStringFromHexStringArray(strBuffer, " ");
     }
 
     /**
-     * Read all available bytes from port like a Hex String array
+     * Read all available bytes from the port as a Hex String array.
      *
-     * @return If input buffer is empty <b>null</b> will be returned, else byte array with all data from port converted to Hex String array
+     * @return null if the input buffer is empty, otherwise an array of 2 character 
+     * hex String representations of the available data
      *
      * @throws SerialPortException
      *
@@ -768,17 +801,16 @@ public class SerialPort {
      */
     public String[] readHexStringArray() throws SerialPortException {
         checkPortOpened("readHexStringArray()");
-        int byteCount = getInputBufferBytesCount();
-        if(byteCount <= 0){
+        int[] intArray = readIntArray();
+        if (intArray == null)
             return null;
-        }
-        return readHexStringArray(byteCount);
+        return hexStringArrayFromIntArray(intArray);
     }
 
     /**
-     * Read all available bytes from port like a int array (values in range from 0 to 255)
+     * Read all available bytes from the port as an int array (with values in the range of 0 to 255)
      *
-     * @return If input buffer is empty <b>null</b> will be returned, else byte array with all data from port converted to int array
+     * @return null if input buffer is empty, otherwise an array of int values representing the available data
      *
      * @throws SerialPortException
      *
@@ -786,17 +818,16 @@ public class SerialPort {
      */
     public int[] readIntArray() throws SerialPortException {
         checkPortOpened("readIntArray()");
-        int byteCount = getInputBufferBytesCount();
-        if(byteCount <= 0){
+        byte[] buffer = readBytes();
+        if (buffer == null)
             return null;
-        }
-        return readIntArray(byteCount);
+        return intArrayFromBytes(buffer);
     }
 
     /**
-     * Get count of bytes in input buffer
+     * Get a count of bytes in the input buffer
      *
-     * @return Count of bytes in input buffer or -1 if error occured
+     * @return Count of bytes in the input buffer or -1 if an error occurred
      *
      * @throws SerialPortException
      *
@@ -808,9 +839,9 @@ public class SerialPort {
     }
 
     /**
-     * Get count of bytes in output buffer
+     * Get a count of bytes in the output buffer
      *
-     * @return Count of bytes in output buffer or -1 if error occured
+     * @return Count of bytes in the output buffer or -1 if an error occurred
      *
      * @throws SerialPortException
      *

@@ -33,7 +33,7 @@ extern "C" {
 #endif
 
 #undef jSSC_NATIVE_LIB_VERSION
-#define jSSC_NATIVE_LIB_VERSION "2.8"
+#define jSSC_NATIVE_LIB_VERSION "2.9"
 
 #undef jssc_SerialNativeInterface_OS_LINUX
 #define jssc_SerialNativeInterface_OS_LINUX 0L
@@ -134,10 +134,10 @@ JNIEXPORT jboolean JNICALL Java_jssc_SerialNativeInterface_setDTR
 /*
  * Class:     jssc_SerialNativeInterface
  * Method:    readBytes
- * Signature: (JI)[B
+ * Signature: (JIJJZ)[B
  */
 JNIEXPORT jbyteArray JNICALL Java_jssc_SerialNativeInterface_readBytes
-  (JNIEnv *, jobject, jlong, jint);
+  (JNIEnv *, jobject, jlong, jint, jlong, jlong, jboolean);
 
 /*
  * Class:     jssc_SerialNativeInterface

@@ -27,6 +27,7 @@ package jssc;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 
@@ -36,7 +37,7 @@ import java.io.InputStreamReader;
  */
 public class SerialNativeInterface {
 
-    private static final String libVersion = "2.8"; //jSSC-2.8.0 Release from 24.01.2014
+    private static final String libVersion = "2.9"; //jSSC-2.8.0 Release from 24.01.2014
     private static final String libMinorSuffix = "0"; //since 0.9.0
 
     public static final int OS_LINUX = 0;
@@ -401,12 +402,27 @@ public class SerialNativeInterface {
      * Read data from port
      * 
      * @param handle handle of opened port
-     * @param byteCount count of bytes required to read
+     *
+     * @param byteCount number of bytes to block and wait for, or 0 to return immediately
+     * with whatever data is available. If timeoutMilliseconds is 0 and byteCount
+     * is positive, then immediately returns with at most byteCount bytes (possibly 0).
+     *
+     * @param timeoutMilliseconds the maximum number of milliseconds to wait for byteCount
+     * bytes to arrive. Set to 0 to return immediately. If negative, blocks indefinitely.
+     *
+     * @param pollPeriodMillis how often to check if the thread has been interrupted. Set
+     * to 0 to disable periodic polling of the thread interrupt status.
+     *
+     * @param exceptionOnTimeout function will throw a SerialPortTimeoutException if this parameter
+     * is set to true and the timeout expires before byteCount bytes are read. If this parameter
+     * is set to false, then upon timeout, this function will return a (possibly length 0)
+     * array of the bytes already read.
      * 
-     * @return Method returns the array of read bytes
+     * @return array of read bytes
      * @throws InterruptedException if the java thread is interrupted while blocking 
+     * @throws SerialPortTimeoutException if the timeout was reached and exceptionOnTimeout is true
      */
-    public native byte[] readBytes(long handle, int byteCount) throws InterruptedException;
+    public native byte[] readBytes(long handle, int byteCount, long timeoutMilliseconds, long pollPeriodMillis, boolean exceptionOnTimeout) throws InterruptedException, SerialPortTimeoutException;
 
     /**
      * Write data to port
