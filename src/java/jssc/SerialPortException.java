@@ -32,6 +32,10 @@ import java.io.IOException;
  */
 public class SerialPortException extends IOException {
 
+    /* The *nix JNI code refers to some of these fields by name, so if a field below
+     * is renamed, be sure to check the native code for occurrences of it first and 
+     * update accordingly
+     */
     final public static String TYPE_PORT_ALREADY_OPENED = "Port already opened";
     final public static String TYPE_PORT_NOT_OPENED = "Port not opened";
     final public static String TYPE_CANT_SET_MASK = "Can't set mask";
@@ -66,6 +70,14 @@ public class SerialPortException extends IOException {
      * @since 2.9.0
      */
     final public static String TYPE_READ_INTERRUPTED = "Thread was interrupted while reading";
+    /**
+     * @since 2.9.0
+     */
+    final public static String TYPE_NO_MEMORY = "Ran out of memory while receiving serial data";
+    /**
+     * @since 2.9.0
+     */
+    final public static String TYPE_UNKNOWN = "An unknown error occurred";
 
     private String portName;
     private String methodName;

@@ -29,6 +29,12 @@
 
 #include <jni.h>
 
+#define SP_EXCEPTION_TYPE_READ_INTERRUPTED              1
+#define SP_EXCEPTION_TYPE_NO_MEMORY                     2
+#define SP_EXCEPTION_TYPE_PARAMETER_IS_NOT_CORRECT      3
+#define SP_EXCEPTION_TYPE_PORT_NOT_OPENED               4
+#define SP_EXCEPTION_TYPE_UNKNOWN                       5
+
 /*
  * Calls System.out.println(String msg) with the given message.
  */
@@ -113,7 +119,7 @@ int getNextTimeout(JNIEnv *env, struct timeval *time, long timeoutDeadline, long
 }
 
 /*
- * Throws a java SerialPortException with the provided parameters.
+ * Throws a java SerialPortTimeoutException with the provided parameters.
  */
 void throwTimeoutException(JNIEnv *env, const char* portName, const char* methodName, long timeoutMillis) {
     jclass excClass = env->FindClass("jssc/SerialPortTimeoutException");
@@ -121,6 +127,49 @@ void throwTimeoutException(JNIEnv *env, const char* portName, const char* method
     jstring port = env->NewStringUTF(portName);
     jstring method = env->NewStringUTF(methodName);
     jobject exception = env->NewObject(excClass, ctor, port, method, (jlong)timeoutMillis);
+    env->Throw((jthrowable)exception);
+}
+
+static jstring getExceptionType(JNIEnv *env, int type) {
+    jclass excClass = env->FindClass("jssc/SerialPortException");
+    jfieldID field = NULL;
+    jstring ret;
+    switch (type) {
+    case SP_EXCEPTION_TYPE_READ_INTERRUPTED:
+        field = env->GetStaticFieldID(excClass, "TYPE_READ_INTERRUPTED", "Ljava/lang/String;");
+        break;
+    case SP_EXCEPTION_TYPE_NO_MEMORY:
+        field = env->GetStaticFieldID(excClass, "TYPE_NO_MEMORY", "Ljava/lang/String;");
+        break;
+    case SP_EXCEPTION_TYPE_PARAMETER_IS_NOT_CORRECT:
+        field = env->GetStaticFieldID(excClass, "TYPE_PARAMETER_IS_NOT_CORRECT", "Ljava/lang/String;");
+        break;
+    case SP_EXCEPTION_TYPE_PORT_NOT_OPENED:
+        field = env->GetStaticFieldID(excClass, "TYPE_PORT_NOT_OPENED", "Ljava/lang/String;");
+        break;
+    case SP_EXCEPTION_TYPE_UNKNOWN:
+        field = env->GetStaticFieldID(excClass, "TYPE_UNKNOWN", "Ljava/lang/String;");
+        break;
+    }
+
+    if (field != NULL) {
+        ret = (jstring)env->GetStaticObjectField(excClass, field);
+    } else {
+        ret = env->NewStringUTF("Invalid Exception Type");
+    }
+    return ret;
+}
+
+/*
+ * Throws a java SerialPortException with the provided parameters.
+ */
+void throwSerialException(JNIEnv *env, const char* portName, const char* methodName, int exceptionType) {
+    jclass excClass = env->FindClass("jssc/SerialPortException");
+    jmethodID ctor = env->GetMethodID(excClass, "<init>", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String)V");
+    jstring port = env->NewStringUTF(portName);
+    jstring method = env->NewStringUTF(methodName);
+    jstring type = getExceptionType(env, exceptionType);
+    jobject exception = env->NewObject(excClass, ctor, port, method, type);
     env->Throw((jthrowable)exception);
 }
 

@@ -550,6 +550,7 @@ JNIEXPORT jboolean JNICALL Java_jssc_SerialNativeInterface_writeBytes
      * @return array of read bytes
      * @throws InterruptedException if the java thread is interrupted while blocking 
      * @throws SerialPortTimeoutException if the timeout was reached and exceptionOnTimeout is true
+     * @throws SerialPortException on read error (eg: port closed or other misc errors)
      */
 JNIEXPORT jbyteArray JNICALL Java_jssc_SerialNativeInterface_readBytes
   (JNIEnv *env, jobject object, jlong portHandle, jint byteCount,
@@ -606,8 +607,27 @@ JNIEXPORT jbyteArray JNICALL Java_jssc_SerialNativeInterface_readBytes
             // It shouldn't matter what we return, the exception will be thrown right away
             break;
         }
-
-        if (selectRetVal > 0) {
+        if (selectRetVal == -1) {
+            int err = errno;
+            switch (err) {
+            case EBADF:
+                throwSerialException(env, "NoPort", "<native>readBytes()", SP_EXCEPTION_TYPE_PORT_NOT_OPENED);
+                break;
+            case EINTR:
+                throwSerialException(env, "NoPort", "<native>readBytes()", SP_EXCEPTION_TYPE_READ_INTERRUPTED);
+                break;
+            case EINVAL:
+                throwSerialException(env, "NoPort", "<native>readBytes()", SP_EXCEPTION_TYPE_PARAMETER_IS_NOT_CORRECT);
+                break;
+            case ENOMEM:
+                throwSerialException(env, "NoPort", "<native>readBytes()", SP_EXCEPTION_TYPE_NO_MEMORY);
+                break;
+            default:
+                throwSerialException(env, "NoPort", "<native>readBytes()", SP_EXCEPTION_TYPE_UNKNOWN);
+                break;
+            }
+            break; //exit the loop
+        } else if (selectRetVal > 0) {
             int result;
             if (byteCount > 0)
                 result = read(portHandle, lpBuffer + (byteCount - byteRemains), byteRemains);
