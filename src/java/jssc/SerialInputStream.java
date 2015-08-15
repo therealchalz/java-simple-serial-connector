@@ -99,13 +99,15 @@ public class SerialInputStream extends InputStream {
 			length = buf.length - offset;
 		
 		int available = this.available();
-		
+		if (available == 0) {
+                    return 0;
+                }
 		if (available > length)
 			available = length;
 		
 		try {
 			byte[] readBuf = serialPort.readBytes(available);
-			System.arraycopy(readBuf, 0, buf, offset, length);
+			System.arraycopy(readBuf, 0, buf, offset, readBuf.length);
 			return readBuf.length;
 		} catch (Exception e) {
 			throw new IOException(e);
