@@ -554,7 +554,7 @@ JNIEXPORT jobjectArray JNICALL Java_jssc_SerialNativeInterface_waitEvents
     OVERLAPPED *overlapped = new OVERLAPPED();
     jclass intClass = env->FindClass("[I");
     jobjectArray returnArray;
-    boolean functionSuccessful = false;
+    jboolean functionSuccessful = false;
     overlapped->hEvent = CreateEventA(NULL, true, false, NULL);
     if(WaitCommEvent(hComm, &lpEvtMask, overlapped)){
         functionSuccessful = true;
@@ -567,8 +567,8 @@ JNIEXPORT jobjectArray JNICALL Java_jssc_SerialNativeInterface_waitEvents
         }
     }
     if(functionSuccessful){
-        boolean executeGetCommModemStatus = false;
-        boolean executeClearCommError = false;
+        jboolean executeGetCommModemStatus = false;
+        jboolean executeClearCommError = false;
         DWORD events[9];//fixed since 0.8 (old value is 8)
         jint eventsCount = 0;
         if((EV_BREAK & lpEvtMask) == EV_BREAK){
@@ -622,7 +622,7 @@ JNIEXPORT jobjectArray JNICALL Java_jssc_SerialNativeInterface_waitEvents
         jint statusDSR = 0;
         jint statusRING = 0;
         jint statusRLSD = 0;
-        boolean successGetCommModemStatus = false;
+        jboolean successGetCommModemStatus = false;
         if(executeGetCommModemStatus){
             DWORD lpModemStat;
             if(GetCommModemStatus(hComm, &lpModemStat)){
@@ -654,7 +654,7 @@ JNIEXPORT jobjectArray JNICALL Java_jssc_SerialNativeInterface_waitEvents
         jint bytesCountIn = 0;
         jint bytesCountOut = 0;
         jint communicationsErrors = 0;
-        boolean successClearCommError = false;
+        jboolean successClearCommError = false;
         if(executeClearCommError){
             DWORD lpErrors;
             COMSTAT *comstat = new COMSTAT();
@@ -763,7 +763,7 @@ JNIEXPORT jobjectArray JNICALL Java_jssc_SerialNativeInterface_getSerialPortName
     LPCSTR lpSubKey = "HARDWARE\\DEVICEMAP\\SERIALCOMM\\";
     jobjectArray returnArray = NULL;
     if(RegOpenKeyExA(HKEY_LOCAL_MACHINE, lpSubKey, 0, KEY_READ, &phkResult) == ERROR_SUCCESS){
-        boolean hasMoreElements = true;
+        jboolean hasMoreElements = true;
         DWORD keysCount = 0;
         char valueName[256];
         DWORD valueNameSize;
