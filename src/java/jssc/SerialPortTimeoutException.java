@@ -30,11 +30,11 @@ package jssc;
  */
 public class SerialPortTimeoutException extends SerialPortException {
 
-	final public static String TYPE_SERIAL_PORT_TIMEOUT = "Serial port operation timeout";
-	
-    private int timeoutValue;
+    final public static String TYPE_SERIAL_PORT_TIMEOUT = "Serial port operation timeout";
 
-    public SerialPortTimeoutException(String portName, String methodName, int timeoutValue) {
+    private long timeoutValue;
+
+    public SerialPortTimeoutException(String portName, String methodName, long timeoutValue) {
         super(portName,methodName, TYPE_SERIAL_PORT_TIMEOUT+" (" + timeoutValue + " ms).");
         this.timeoutValue = timeoutValue;
     }
@@ -42,7 +42,7 @@ public class SerialPortTimeoutException extends SerialPortException {
     /**
      * Getting timeout value in millisecond
      */
-    public int getTimeoutValue(){
+    public long getTimeoutValue(){
         return timeoutValue;
     }
 }

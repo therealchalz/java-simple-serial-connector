@@ -561,6 +561,8 @@ JNIEXPORT jbyteArray JNICALL Java_jssc_SerialNativeInterface_readBytes
     struct timeval timeout;
     int selectRetVal;
     long timeoutDeadline = 0;
+    char deadlineValid=0;
+    char blockForever;
     jclass threadClass = env->FindClass("java/lang/Thread");
     jmethodID areWeInterruptedMethod = env->GetStaticMethodID(threadClass, "interrupted", "()Z");
 
@@ -568,24 +570,34 @@ JNIEXPORT jbyteArray JNICALL Java_jssc_SerialNativeInterface_readBytes
         byteCount = 0;
     if (pollPeriodMillis < 0)
         pollPeriodMillis = 0;
-
-    if (timeoutMilliseconds > 0) {  //Block until timeout
-        timeoutDeadline = getTimePreciseMicros(env) + timeoutMilliseconds*1000;
-    } else if (timeoutMilliseconds == 0) {   //Do not block
-        timeoutDeadline = 0;
-    } else {    //Block forever
-        timeoutDeadline = -1;
+        
+    blockForever = 0;
+    if (pollPeriodMillis == 0 && timeoutMilliseconds < 0) {
+        blockForever = 1;
     }
-
-    char blockForever;
-    if (byteCount == 0) {
-        //Return right away
-        timeout.tv_sec=0;
-        timeout.tv_usec=0;
-        blockForever = 0;
-        byteRemains = 1024; //return max 1024 bytes when byteCount is 0;
-    } else {
-        blockForever = getNextTimeout(env, &timeout, timeoutDeadline, pollPeriodMillis);
+    
+    if (!blockForever) {
+        if (byteCount == 0) {
+            //return immediately
+            timeoutDeadline = getTimePreciseMicros(env);
+            deadlineValid = 1;
+            byteRemains = 256; //return max 256 bytes when byteCount is 0;
+        } else {
+            if (timeoutMilliseconds < 0) {
+                //deadline is invalid, only pollPeriodMillis is used (which at this point we know is >0)
+                deadlineValid = 0;
+            } else {
+                timeoutDeadline = getTimePreciseMicros(env) + timeoutMilliseconds*1000;
+                deadlineValid = 1;
+            }
+        }
+        
+        if (getNextTimeout(env, &timeout, deadlineValid, timeoutDeadline, pollPeriodMillis) == 1 ) {
+            //Some error
+            //Return right away
+            timeout.tv_sec=0;
+            timeout.tv_usec=0;
+        }
     }
 
     jbyte *lpBuffer = new jbyte[byteRemains];
@@ -633,6 +645,7 @@ JNIEXPORT jbyteArray JNICALL Java_jssc_SerialNativeInterface_readBytes
                 result = read(portHandle, lpBuffer + (byteCount - byteRemains), byteRemains);
             else
                 result = read(portHandle, lpBuffer, byteRemains);
+
             if(result > 0){
                 if (byteCount == 0) {
                     byteCount = result;
@@ -645,12 +658,20 @@ JNIEXPORT jbyteArray JNICALL Java_jssc_SerialNativeInterface_readBytes
 
         // Check if we've timed out and if so, throw the exception or return the data
         if (byteRemains > 0 && byteCount != 0) {
-            blockForever = getNextTimeout(env, &timeout, timeoutDeadline, pollPeriodMillis);
-            if (!blockForever && (timeout.tv_sec == 0 && timeout.tv_usec == 0)) {
-                if (exceptionOnTimeout) {
-                    throwTimeoutException(env, "NoPort", "<native>readBytes()", timeoutMilliseconds);
+            if (!blockForever) {
+                if (getNextTimeout(env, &timeout, deadlineValid, timeoutDeadline, pollPeriodMillis) == 1) {
+                    //Some error
+                    //Return right away
+                    timeout.tv_sec=0;
+                    timeout.tv_usec=0;
                 }
-                break;
+                if (timeout.tv_sec == 0 && timeout.tv_usec == 0) {
+                    //Timeout elapsed, but byteRemains > 0
+                    if (exceptionOnTimeout) {
+                        throwTimeoutException(env, "NoPort", "<native>readBytes()", timeoutMilliseconds);
+                    }
+                    break;
+                }
             }
         }
 
