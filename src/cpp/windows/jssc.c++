@@ -833,3 +833,4 @@ JNIEXPORT jintArray JNICALL Java_jssc_SerialNativeInterface_getLinesStatus
     env->SetIntArrayRegion(returnArray, 0, 4, returnValues);
     return returnArray;
 }
+

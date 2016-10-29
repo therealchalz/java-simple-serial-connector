@@ -65,7 +65,6 @@ public class SerialInputStream extends InputStream {
 	 * @throws IOException On serial port error or timeout
 	 */
 	public int read(int timeout) throws IOException {
-		byte[] buf = new byte[1];
 		byte[] data = serialPort.readBytes(1, timeout);
 		if (data.length==0) {
 			throw new SerialPortTimeoutException(serialPort.getPortName(), "read(int timeout)", timeout);
