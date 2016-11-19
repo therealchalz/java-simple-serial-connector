@@ -249,12 +249,11 @@ JNIEXPORT jboolean JNICALL Java_jssc_SerialNativeInterface_writeBytes
     return returnValue;
 }
 
-DWORD getNextTimeoutWindows(JNIEnv *env, long timeoutDeadline, long pollPeriodMillis) {
+DWORD getNextTimeoutWindows(JNIEnv *env, char deadlineValid, long timeoutDeadline, long pollPeriodMillis) {
     struct timeval timeout;
-    char blockForever = getNextTimeout(env, &timeout, timeoutDeadline, pollPeriodMillis);
-    
-    if (blockForever) {
-        return INFINITE;
+    if (getNextTimeout(env, &timeout, deadlineValid, timeoutDeadline, pollPeriodMillis) == 1) {
+        //Error
+        return 0;
     }
 
     DWORD millisecondTimeout = timeout.tv_sec*1000 + timeout.tv_usec/1000;
@@ -305,7 +304,9 @@ JNIEXPORT jbyteArray JNICALL Java_jssc_SerialNativeInterface_readBytes
     jlong timeoutMilliseconds, jlong pollPeriodMillis, jboolean exceptionOnTimeout){
     HANDLE hComm = (HANDLE)portHandle;
     DWORD timeoutDeadline = 0;
+    char deadlineValid = 0;
     DWORD byteRemains = byteCount;
+    DWORD waitMillis=0;
     
     jclass threadClass = env->FindClass("java/lang/Thread");
     jmethodID areWeInterruptedMethod = env->GetStaticMethodID(threadClass, "interrupted", "()Z");
@@ -314,42 +315,32 @@ JNIEXPORT jbyteArray JNICALL Java_jssc_SerialNativeInterface_readBytes
         byteCount = 0;
     if (pollPeriodMillis < 0)
         pollPeriodMillis = 0;
-
-    if (timeoutMilliseconds > 0) {  //Block until timeout
-        timeoutDeadline = getTimePreciseMicros(env) + timeoutMilliseconds*1000;
-    } else if (timeoutMilliseconds == 0) {   //Do not block
-        timeoutDeadline = 0;
-    } else {    //Block forever
-        timeoutDeadline = -1;
+        
+    waitMillis = 0;
+    if (pollPeriodMillis == 0 && timeoutMilliseconds < 0) {
+        waitMillis = INFINITE;
     }
-
-    DWORD waitMillis=0;
-    if (byteCount == 0) {
-        //Return right away
-        waitMillis = 0;
-        jint bufferCounts[2];
-        getBuffersBytesCount(hComm, bufferCounts);
-        if (bufferCounts[0] == 0) {
-            byteRemains = 0;
-        } else {
-            byteRemains = bufferCounts[0];
-        }
-    } else if (byteCount != 0 && timeoutDeadline == 0) {
-        //Return right away
-        waitMillis = 0;
-        jint bufferCounts[2];
-        getBuffersBytesCount(hComm, bufferCounts);
-        if (bufferCounts[0] == 0) {
-            byteRemains = 0;
-        } else {
-            if (bufferCounts[0] < byteCount)
+    
+    if (waitMillis != INFINITE) {
+        if (byteCount == 0) {
+            //Return right away
+            jint bufferCounts[2];
+            getBuffersBytesCount(hComm, bufferCounts);
+            if (bufferCounts[0] == 0) {
+                byteRemains = 0;
+            } else {
                 byteRemains = bufferCounts[0];
-            else
-                byteRemains = byteCount;
-            byteCount = 0;
+            }
+            deadlineValid = 0;
+        } else {
+            if (timeoutMilliseconds < 0) {
+                deadlineValid = 0;
+            } else {
+                timeoutDeadline = getTimePreciseMicros(env) + timeoutMilliseconds*1000;
+                deadlineValid = 1;
+            }
         }
-    }else {
-        waitMillis = getNextTimeoutWindows(env, timeoutDeadline, pollPeriodMillis);
+        waitMillis = getNextTimeoutWindows(env, deadlineValid, timeoutDeadline, pollPeriodMillis);
     }
     
     jbyte *lpBuffer = new jbyte[byteRemains];
@@ -381,12 +372,14 @@ JNIEXPORT jbyteArray JNICALL Java_jssc_SerialNativeInterface_readBytes
                 break;
             }
 
-            waitMillis = getNextTimeoutWindows(env, timeoutDeadline, pollPeriodMillis);
+            if (waitMillis != INFINITE)
+                waitMillis = getNextTimeoutWindows(env, deadlineValid, timeoutDeadline, pollPeriodMillis);
 
             DWORD waitRetVal = WAIT_TIMEOUT;
             while (waitRetVal == WAIT_TIMEOUT && waitMillis > 0) {
                 waitRetVal = WaitForSingleObject(overlapped->hEvent, waitMillis);
-                waitMillis = getNextTimeoutWindows(env, timeoutDeadline, pollPeriodMillis);
+                if (waitMillis != INFINITE)
+                    waitMillis = getNextTimeoutWindows(env, deadlineValid, timeoutDeadline, pollPeriodMillis);
                 // Check if the java thread has been interrupted, and if so, throw the exception
                 if (env->CallStaticBooleanMethod(threadClass, areWeInterruptedMethod)) {
                     jclass excClass = env->FindClass("java/lang/InterruptedException");
@@ -408,15 +401,17 @@ JNIEXPORT jbyteArray JNICALL Java_jssc_SerialNativeInterface_readBytes
         }
         
         // Check if we've timed out and if so, throw the exception or return the data
-        if (byteRemains > 0 && byteCount != 0) {
-            waitMillis = getNextTimeoutWindows(env, timeoutDeadline, pollPeriodMillis);
-            if (waitMillis == 0) {
-                if (exceptionOnTimeout) {
-                    throwTimeoutException(env, "NoPort", "<native>readBytes()", timeoutMilliseconds);
+        if (waitMillis != INFINITE) {
+            if (byteRemains > 0 && byteCount != 0) {
+                waitMillis = getNextTimeoutWindows(env, deadlineValid, timeoutDeadline, pollPeriodMillis);
+                if (waitMillis == 0) {
+                    if (exceptionOnTimeout) {
+                        throwTimeoutException(env, "NoPort", "<native>readBytes()", timeoutMilliseconds);
+                    }
+                    CloseHandle(overlapped->hEvent);
+                    delete overlapped;
+                    break;
                 }
-                CloseHandle(overlapped->hEvent);
-                delete overlapped;
-                break;
             }
         }
 
