@@ -33,12 +33,10 @@ public class SerialInputStream extends InputStream {
 	/** Set the default timeout (ms) of this SerialInputStream.
 	 * This affects subsequent calls to {@link #read()}, {@link #blockingRead(int[])}, 
 	 * and {@link #blockingRead(int[], int, int)}
-	 * The default timeout can be 'unset' by setting it to 0.
+	 * The default timeout can be 'unset' by setting it to -1, which can cause indefinite blocks.
 	 * @param time The timeout in milliseconds.
 	 */
 	public void setTimeout(int time) {
-		if (time < 0)
-			time = 0;
 		defaultTimeout = time;
 	}
 
